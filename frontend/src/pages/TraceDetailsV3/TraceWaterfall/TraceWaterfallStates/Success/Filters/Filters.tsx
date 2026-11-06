@@ -1,0 +1,420 @@
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { navigate } from 'lib/router/navigation';
+import { ArrowRightFromLine, Search, X } from '@signozhq/icons';
+import { Switch } from '@signozhq/ui/switch';
+import { ToggleGroup } from '@signozhq/ui/toggle-group';
+import { Button } from '@signozhq/ui/button';
+import { Tooltip } from '@signozhq/ui/tooltip';
+import { Typography } from '@signozhq/ui/typography';
+import cx from 'classnames';
+import QuerySearch from 'components/QueryBuilderV2/QueryV2/QuerySearch/QuerySearch';
+import { ENTITY_VERSION_V5 } from 'constants/app';
+import { initialQueriesMap, PANEL_TYPES } from 'constants/queryBuilder';
+import { useGetQueryRange } from 'hooks/queryBuilder/useGetQueryRange';
+import { uniqBy } from 'lodash-es';
+import { getUnstableCurrentSearchParams } from 'utils/getUnstableCurrentSearchParams';
+import NozButton from 'pages/TraceDetailsV3/TraceDetailsHeader/NozButton';
+import CopyButton from 'periscope/components/CopyButton/CopyButton';
+import { Query } from 'types/api/queryBuilder/queryBuilderData';
+import {
+	DataSource,
+	TracesAggregatorOperator,
+} from 'types/common/queryBuilder';
+import { extractQueryPairs } from 'utils/queryContextUtils';
+import { validateQuery } from 'utils/queryValidationUtils';
+
+import { BASE_FILTER_QUERY } from './constants';
+import { useHighlightErrors } from './hooks/useHighlightErrors';
+import {
+	SpanCategory,
+	useSpanCategoryFilter,
+} from './hooks/useSpanCategoryFilter';
+import QueryResult from './QueryResult';
+
+import styles from './Filters.module.scss';
+
+function prepareQuery(expression: string, traceID: string): Query {
+	return {
+		...initialQueriesMap.traces,
+		builder: {
+			...initialQueriesMap.traces.builder,
+			queryData: [
+				{
+					...initialQueriesMap.traces.builder.queryData[0],
+					aggregateOperator: TracesAggregatorOperator.NOOP,
+					orderBy: [{ columnName: 'timestamp', order: 'asc' }],
+					filter: { expression: `(${expression}) AND trace_id = '${traceID}'` },
+					selectColumns: [],
+				},
+			],
+		},
+	};
+}
+
+function Filters({
+	startTime,
+	endTime,
+	traceID,
+	onFilteredSpansChange = (): void => {},
+	isExpanded,
+	onExpand,
+	onCollapse,
+}: {
+	startTime: number;
+	endTime: number;
+	traceID: string;
+	onFilteredSpansChange?: (spanIds: string[], isFilterActive: boolean) => void;
+	isExpanded: boolean;
+	onExpand: () => void;
+	onCollapse: () => void;
+}): JSX.Element {
+	const [expression, setExpression] = useState<string>('');
+	const [committedExpression, setCommittedExpression] = useState<string>('');
+	const [noData, setNoData] = useState<boolean>(false);
+	const [filteredSpanIds, setFilteredSpanIds] = useState<string[]>([]);
+	const [currentSearchedIndex, setCurrentSearchedIndex] = useState<number>(0);
+	const expressionRef = useRef<string>('');
+	const containerRef = useRef<HTMLDivElement>(null);
+
+	const runQuery = useCallback(
+		(value: string): void => {
+			if (!validateQuery(value).isValid) {
+				return;
+			}
+			setCommittedExpression(value);
+			// Clear results when expression is empty
+			if (!value.trim()) {
+				setFilteredSpanIds([]);
+				onFilteredSpansChange?.([], false);
+				setCurrentSearchedIndex(0);
+				setNoData(false);
+			}
+		},
+		[onFilteredSpansChange],
+	);
+
+	// onChange fires on every keystroke — only store the expression, don't trigger API
+	const handleExpressionChange = useCallback(
+		(value: string): void => {
+			setExpression(value);
+			expressionRef.current = value;
+			// Clear results when expression is emptied
+			if (!value.trim()) {
+				setCommittedExpression('');
+				setFilteredSpanIds([]);
+				onFilteredSpansChange?.([], false);
+				setCurrentSearchedIndex(0);
+				setNoData(false);
+			}
+		},
+		[onFilteredSpansChange],
+	);
+
+	// onRun fires on Ctrl+Enter
+	const handleRunQuery = useCallback(
+		(value: string): void => {
+			runQuery(value);
+		},
+		[runQuery],
+	);
+
+	// Run query on blur (click outside the filter input)
+	const handleBlur = useCallback((): void => {
+		runQuery(expressionRef.current);
+	}, [runQuery]);
+
+	const handleClear = useCallback((): void => {
+		setExpression('');
+		expressionRef.current = '';
+		setCommittedExpression('');
+		setFilteredSpanIds([]);
+		onFilteredSpansChange?.([], false);
+		setCurrentSearchedIndex(0);
+		setNoData(false);
+	}, [onFilteredSpansChange]);
+
+	const committedPairs = useMemo(
+		() => extractQueryPairs(committedExpression),
+		[committedExpression],
+	);
+
+	// Expression-based filter hooks
+	const filterProps = {
+		expression,
+		committedPairs,
+		setExpression,
+		expressionRef,
+		runQuery,
+	};
+	const { isHighlightErrors, handleToggle: toggleHighlightErrors } =
+		useHighlightErrors(filterProps);
+
+	// Auto-expand the filter row when turning Highlight errors ON so the user
+	// can immediately use prev/next navigation. Turning it OFF doesn't auto-
+	// collapse — the user keeps whatever expansion state they had.
+	const handleToggleHighlightErrors = useCallback(
+		(checked: boolean): void => {
+			if (checked && !isExpanded) {
+				onExpand();
+			}
+			toggleHighlightErrors(checked);
+		},
+		[isExpanded, onExpand, toggleHighlightErrors],
+	);
+	const { selectedCategory, categories, handleCategoryChange } =
+		useSpanCategoryFilter(filterProps);
+
+	const handlePrevNext = useCallback(
+		(index: number, spanId?: string): void => {
+			const searchParams = getUnstableCurrentSearchParams();
+			if (spanId) {
+				searchParams.set('spanId', spanId);
+			} else {
+				searchParams.set('spanId', filteredSpanIds[index]);
+			}
+
+			navigate({ search: searchParams.toString() }, { replace: true });
+		},
+		[filteredSpanIds],
+	);
+
+	const isFilterActive = committedExpression.trim().length > 0;
+
+	const { isFetching, error } = useGetQueryRange(
+		{
+			query: prepareQuery(committedExpression, traceID),
+			graphType: PANEL_TYPES.LIST,
+			selectedTime: 'GLOBAL_TIME',
+			start: startTime,
+			end: endTime,
+			params: {
+				dataSource: 'traces',
+			},
+			tableParams: {
+				pagination: {
+					offset: 0,
+					limit: 10000,
+				},
+				selectColumns: [
+					{
+						key: 'spanID',
+						dataType: 'string',
+						type: 'tag',
+						id: 'spanId--string--tag--true',
+						isIndexed: false,
+					},
+				],
+			},
+		},
+		ENTITY_VERSION_V5,
+		{
+			queryKey: [committedExpression, traceID, startTime, endTime],
+			enabled: isFilterActive,
+			onSuccess: (data) => {
+				if (data?.payload.data.newResult.data.result[0].list) {
+					const uniqueSpans = uniqBy(
+						data?.payload.data.newResult.data.result[0].list,
+						'data.spanID',
+					);
+
+					const spanIds = uniqueSpans.map((val) => val.data.spanID);
+					setFilteredSpanIds(spanIds);
+					onFilteredSpansChange?.(spanIds, isFilterActive);
+					handlePrevNext(0, spanIds[0]);
+					setNoData(false);
+				} else {
+					setNoData(true);
+					setFilteredSpanIds([]);
+					onFilteredSpansChange?.([], isFilterActive);
+					setCurrentSearchedIndex(0);
+				}
+			},
+			onError: () => {
+				setNoData(false);
+				setFilteredSpanIds([]);
+				onFilteredSpansChange?.([], isFilterActive);
+				setCurrentSearchedIndex(0);
+			},
+		},
+	);
+
+	const highlightErrorsToggle = (
+		<div
+			className={styles.highlightErrorsToggle}
+			data-testid="highlight-errors-toggle"
+		>
+			<Typography.Text>Highlight errors</Typography.Text>
+			<Switch
+				textPlacement="right"
+				color="danger"
+				value={isHighlightErrors}
+				onChange={handleToggleHighlightErrors}
+			/>
+		</div>
+	);
+
+	const hasExpression = expression.trim().length > 0;
+	const hasResults = filteredSpanIds.length > 0;
+
+	const handlePrev = useCallback((): void => {
+		handlePrevNext(currentSearchedIndex - 1);
+		setCurrentSearchedIndex((prev) => prev - 1);
+	}, [currentSearchedIndex, handlePrevNext]);
+
+	const handleNext = useCallback((): void => {
+		handlePrevNext(currentSearchedIndex + 1);
+		setCurrentSearchedIndex((prev) => prev + 1);
+	}, [currentSearchedIndex, handlePrevNext]);
+
+	const pill = (
+		/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */
+		<div
+			className={styles.pill}
+			onClick={onExpand}
+			data-testid="waterfall-filter-pill"
+		>
+			<Search size={12} />
+			<span className={styles.pillText}>{expression || 'Search...'}</span>
+			{expression && <span className={styles.pillIndicator} />}
+		</div>
+	);
+
+	const pillWithPopover = (
+		<Tooltip
+			title={
+				expression ? (
+					<div className={styles.pillPopover}>
+						<div className={styles.pillPopoverHeader}>
+							<Typography.Text>Search query</Typography.Text>
+							<CopyButton value={expression} size={12} />
+						</div>
+						<div className={styles.pillPopoverExpression}>{expression}</div>
+					</div>
+				) : undefined
+			}
+			side="bottom"
+			align="start"
+		>
+			{pill}
+		</Tooltip>
+	);
+
+	// Mode-conditional render: only one of (pill | QuerySearch) is mounted
+	// at a time. Collapsing unmounts the editor — half-written queries are
+	// dropped, so collapse can't accidentally commit a malformed expression
+	// and fire an erroring /query_range request.
+	return (
+		// eslint-disable-next-line jsx-a11y/no-static-element-interactions
+		<div
+			className={cx(styles.root, isExpanded && styles.isExpanded)}
+			data-testid="waterfall-filters"
+			ref={containerRef}
+			onBlur={(e): void => {
+				const relatedTarget = e.relatedTarget as Node | null;
+				const blurredIntoSelf = !!containerRef.current?.contains(relatedTarget);
+				if (!blurredIntoSelf) {
+					handleBlur();
+				}
+			}}
+		>
+			{isExpanded && (
+				<div className={styles.categoryControls}>
+					<ToggleGroup
+						variant="outlined"
+						color="secondary"
+						type="single"
+						value={selectedCategory}
+						onChange={(value: string): void => {
+							if (value) {
+								handleCategoryChange(value as SpanCategory);
+							}
+						}}
+						size="sm"
+						items={categories.map((category) => ({
+							value: category,
+							label: category,
+						}))}
+					/>
+				</div>
+			)}
+
+			<div className={styles.searchInput}>
+				{isExpanded ? (
+					<div className={styles.searchAndNav}>
+						<div className={styles.searchContainer}>
+							<QuerySearch
+								queryData={{
+									...BASE_FILTER_QUERY,
+									filter: { expression },
+								}}
+								onChange={handleExpressionChange}
+								onRun={handleRunQuery}
+								dataSource={DataSource.TRACES}
+								placeholder="Enter your filter query (e.g., http.status_code >= 500 AND service.name = 'frontend')"
+							/>
+						</div>
+					</div>
+				) : (
+					<div className={styles.searchPill}>{pillWithPopover}</div>
+				)}
+			</div>
+
+			<div className={styles.resultActions}>
+				<QueryResult
+					hasExpression={hasExpression}
+					hasResults={hasResults}
+					isFetching={isFetching}
+					error={error}
+					noData={noData}
+					currentIndex={currentSearchedIndex}
+					total={filteredSpanIds.length}
+					onPrev={handlePrev}
+					onNext={handleNext}
+					showNavigation={isExpanded}
+				/>
+				{isExpanded && (
+					<div className={styles.expandedActions}>
+						{hasExpression && (
+							<Tooltip title="Clear filter">
+								<Button
+									aria-label="Clear filter"
+									variant="ghost"
+									size="sm"
+									icon
+									color="secondary"
+									onClick={handleClear}
+									testId="clear-filter"
+								>
+									<X size={14} />
+								</Button>
+							</Tooltip>
+						)}
+						<Tooltip title="Collapse filters">
+							<Button
+								aria-label="Collapse filters"
+								testId="waterfall-filter-collapse"
+								variant="ghost"
+								size="sm"
+								icon
+								color="secondary"
+								onClick={onCollapse}
+							>
+								<ArrowRightFromLine size={14} />
+							</Button>
+						</Tooltip>
+					</div>
+				)}
+			</div>
+
+			<NozButton />
+
+			<div className={styles.highlightControl}>{highlightErrorsToggle}</div>
+		</div>
+	);
+}
+
+Filters.defaultProps = {
+	onFilteredSpansChange: undefined,
+};
+
+export default Filters;

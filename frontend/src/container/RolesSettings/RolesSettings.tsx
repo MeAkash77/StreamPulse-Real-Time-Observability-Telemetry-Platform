@@ -1,0 +1,78 @@
+import { useState } from 'react';
+import { Plus } from '@signozhq/icons';
+import { useAppNavigate } from 'lib/router/useAppNavigate';
+import { Input } from '@signozhq/ui/input';
+import AuthZButton from 'lib/authz/components/AuthZButton/AuthZButton';
+import AuthZTooltip from 'lib/authz/components/AuthZTooltip/AuthZTooltip';
+import ROUTES from 'constants/routes';
+import {
+	RoleCreatePermission,
+	RoleListPermission,
+} from 'lib/authz/hooks/useAuthZ/permissions/role.permissions';
+import { useRolesFeatureGate } from 'hooks/useRolesFeatureGate';
+
+import RolesListingTable from './RolesComponents/RolesListingTable';
+
+import styles from './RolesSettings.module.scss';
+
+function RolesSettings(): JSX.Element {
+	const [searchQuery, setSearchQuery] = useState('');
+	const navigate = useAppNavigate();
+	const { isRolesEnabled } = useRolesFeatureGate();
+
+	return (
+		<div data-testid="roles-settings">
+			<div className={styles.rolesSettingsHeader}>
+				<h3 className={styles.rolesSettingsHeaderTitle}>Roles</h3>
+				<p className={styles.rolesSettingsHeaderDescription}>
+					<span className="translate-safe">
+						{isRolesEnabled
+							? 'Create and manage custom roles for your team. '
+							: 'The built-in roles of this instance.'}
+					</span>{' '}
+					<a
+						href="https://signoz.io/docs/manage/administrator-guide/iam/roles/"
+						target="_blank"
+						rel="noopener noreferrer"
+						className={styles.rolesSettingsHeaderLearnMore}
+					>
+						Learn more
+					</a>
+				</p>
+			</div>
+			<div className={styles.rolesSettingsContent}>
+				<div className={styles.rolesSettingsToolbar}>
+					<AuthZTooltip
+						checks={[RoleListPermission]}
+						triggerClassName={styles.rolesSettingsSearch}
+					>
+						<Input
+							type="search"
+							placeholder="Search for roles..."
+							value={searchQuery}
+							onChange={(e): void => setSearchQuery(e.target.value)}
+							testId="roles-search-input"
+						/>
+					</AuthZTooltip>
+					{isRolesEnabled && (
+						<AuthZButton
+							size="md"
+							checks={[RoleCreatePermission]}
+							variant="solid"
+							color="primary"
+							width={156}
+							onClick={(): void => navigate(ROUTES.ROLE_CREATE)}
+							prefix={<Plus size={14} />}
+							testId="create-custom-role-btn"
+						>
+							Custom role
+						</AuthZButton>
+					)}
+				</div>
+				<RolesListingTable searchQuery={searchQuery} />
+			</div>
+		</div>
+	);
+}
+
+export default RolesSettings;

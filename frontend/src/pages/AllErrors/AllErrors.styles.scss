@@ -1,0 +1,14 @@
+.all-errors-page {
+	.all-errors-right-section {
+		.right-toolbar-actions-container {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			justify-content: flex-end;
+		}
+	}
+
+	.ant-tabs {
+		margin: 0 8px;
+	}
+}

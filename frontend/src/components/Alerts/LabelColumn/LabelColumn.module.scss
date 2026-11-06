@@ -1,0 +1,75 @@
+.labelColumn {
+	// Badges fill their wrapper; the wrapper, as the flex item, owns the cap.
+	--badge-max-width: 100%;
+
+	position: relative;
+	display: flex;
+	gap: 4px;
+	align-items: center;
+	overflow: hidden;
+	max-width: 100%;
+	width: 100%;
+
+	> * {
+		flex-shrink: 0;
+		max-width: 180px;
+	}
+}
+
+// Kept mounted so its width can still be measured.
+.overflowed {
+	position: absolute;
+	visibility: hidden;
+	pointer-events: none;
+}
+
+// The only visible label truncates instead of pushing `+N` out of view.
+.labelColumn > .shrinkable {
+	flex-shrink: 1;
+	min-width: 0;
+}
+
+.overflowTrigger {
+	all: unset;
+	cursor: pointer;
+}
+
+.labelPopover {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 8px;
+	max-height: 300px;
+	overflow-y: auto;
+}
+
+.labelTooltip {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	max-height: 300px;
+	overflow-y: auto;
+}
+
+.labelValue {
+	text-overflow: ellipsis;
+	overflow: hidden;
+}
+
+.tooltipContent {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.copyButton {
+	all: unset;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	opacity: 0.7;
+
+	&:hover {
+		opacity: 1;
+	}
+}

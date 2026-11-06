@@ -1,0 +1,530 @@
+import ROUTES from 'constants/routes';
+import { navigate } from 'lib/router/navigation';
+import { rest, server } from 'mocks-server/server';
+import { render, screen, userEvent, waitFor } from 'tests/test-utils';
+
+import ResetPassword from '../index';
+
+// Mock dependencies
+jest.mock('lib/router/navigation', () => ({
+	...jest.requireActual('lib/router/navigation'),
+	navigate: jest.fn(),
+}));
+
+const mockSuccessNotification = jest.fn();
+const mockErrorNotification = jest.fn();
+
+interface MockNotifications {
+	success: jest.MockedFunction<(...args: unknown[]) => void>;
+	error: jest.MockedFunction<(...args: unknown[]) => void>;
+}
+
+jest.mock('hooks/useNotifications', () => ({
+	useNotifications: (): { notifications: MockNotifications } => ({
+		notifications: {
+			success: mockSuccessNotification,
+			error: mockErrorNotification,
+		},
+	}),
+}));
+
+const RESET_PASSWORD_ENDPOINT = '*/api/v2/factor_password/reset';
+
+const mockNavigate = navigate as jest.MockedFunction<typeof navigate>;
+
+describe('ResetPassword Component', () => {
+	beforeEach(() => {
+		jest.clearAllMocks();
+		mockSuccessNotification.mockClear();
+		mockErrorNotification.mockClear();
+		window.history.pushState({}, '', '/password-reset?token=reset-token-123');
+	});
+
+	afterEach(() => {
+		server.resetHandlers();
+	});
+
+	describe('Initial Render', () => {
+		it('renders reset password form with all required fields', () => {
+			render(<ResetPassword version="1.0.0" />, undefined, {
+				initialRoute: '/password-reset?token=reset-token-123',
+			});
+
+			expect(screen.getByText(/reset your password/i)).toBeInTheDocument();
+			expect(screen.getByTestId('password')).toBeInTheDocument();
+			expect(screen.getByTestId('confirmPassword')).toBeInTheDocument();
+			expect(
+				screen.getByRole('button', { name: /reset password/i }),
+			).toBeInTheDocument();
+			expect(screen.getByText(/signoz 1\.0\.0/i)).toBeInTheDocument();
+		});
+	});
+
+	describe('Form Validation', () => {
+		it('disables submit button when passwords do not match', async () => {
+			const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+			render(<ResetPassword version="1.0.0" />, undefined, {
+				initialRoute: '/password-reset?token=reset-token-123',
+			});
+
+			const passwordInput = screen.getByPlaceholderText(/enter new password/i);
+			const confirmPasswordInput = screen.getByPlaceholderText(
+				/confirm your new password/i,
+			);
+			const submitButton = screen.getByRole('button', {
+				name: /reset password/i,
+			});
+
+			expect(submitButton).toHaveAttribute('aria-disabled', 'true');
+
+			await user.type(passwordInput, 'password123');
+			await user.type(confirmPasswordInput, 'password456');
+			await user.tab(); // Blur the confirm password field to trigger validation
+
+			await waitFor(() => {
+				expect(screen.getByText(/passwords don't match/i)).toBeInTheDocument();
+				expect(submitButton).toHaveAttribute('aria-disabled', 'true');
+			});
+		});
+
+		it('enables submit button when passwords match', async () => {
+			const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+			render(<ResetPassword version="1.0.0" />, undefined, {
+				initialRoute: '/password-reset?token=reset-token-123',
+			});
+
+			const passwordInput = screen.getByPlaceholderText(/enter new password/i);
+			const confirmPasswordInput = screen.getByPlaceholderText(
+				/confirm your new password/i,
+			);
+			const submitButton = screen.getByRole('button', {
+				name: /reset password/i,
+			});
+
+			await user.type(passwordInput, 'newPassword123');
+			await user.type(confirmPasswordInput, 'newPassword123');
+
+			// Wait for debounced validation
+			await waitFor(
+				() => {
+					expect(submitButton).not.toHaveAttribute('aria-disabled', 'true');
+				},
+				{ timeout: 200 },
+			);
+		});
+
+		it('clears password mismatch error when passwords match', async () => {
+			const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+			render(<ResetPassword version="1.0.0" />, undefined, {
+				initialRoute: '/password-reset?token=reset-token-123',
+			});
+
+			const passwordInput = screen.getByPlaceholderText(/enter new password/i);
+			const confirmPasswordInput = screen.getByPlaceholderText(
+				/confirm your new password/i,
+			);
+
+			await user.type(passwordInput, 'password123');
+			await user.type(confirmPasswordInput, 'password456');
+			await user.tab(); // Blur the confirm password field to trigger validation
+
+			await waitFor(() => {
+				expect(screen.getByText(/passwords don't match/i)).toBeInTheDocument();
+			});
+
+			await user.clear(confirmPasswordInput);
+			await user.type(confirmPasswordInput, 'password123');
+			await user.tab(); // Blur again to trigger validation
+
+			await waitFor(
+				() => {
+					expect(
+						screen.queryByText(/passwords don't match/i),
+					).not.toBeInTheDocument();
+				},
+				{ timeout: 200 },
+			);
+		});
+
+		it('clears password mismatch error when confirm password is emptied', async () => {
+			const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+			render(<ResetPassword version="1.0.0" />, undefined, {
+				initialRoute: '/password-reset?token=reset-token-123',
+			});
+
+			const passwordInput = screen.getByPlaceholderText(/enter new password/i);
+			const confirmPasswordInput = screen.getByPlaceholderText(
+				/confirm your new password/i,
+			);
+			const submitButton = screen.getByRole('button', {
+				name: /reset password/i,
+			});
+
+			await user.type(passwordInput, 'password123');
+			await user.type(confirmPasswordInput, 'password456');
+			await user.tab();
+
+			await waitFor(() => {
+				expect(screen.getByText(/passwords don't match/i)).toBeInTheDocument();
+			});
+
+			await user.clear(confirmPasswordInput);
+
+			await waitFor(() => {
+				expect(
+					screen.queryByText(/passwords don't match/i),
+				).not.toBeInTheDocument();
+				expect(submitButton).toHaveAttribute('aria-disabled', 'true');
+			});
+		});
+	});
+
+	describe('Successful Password Reset', () => {
+		it('successfully resets password and redirects to login', async () => {
+			const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+			server.use(
+				rest.post(RESET_PASSWORD_ENDPOINT, (_req, res, ctx) =>
+					res(
+						ctx.status(200),
+						ctx.json({
+							status: 'success',
+							message: 'Password reset successfully',
+						}),
+					),
+				),
+			);
+
+			render(<ResetPassword version="1.0.0" />, undefined, {
+				initialRoute: '/password-reset?token=reset-token-123',
+			});
+
+			const passwordInput = screen.getByPlaceholderText(/enter new password/i);
+			const confirmPasswordInput = screen.getByPlaceholderText(
+				/confirm your new password/i,
+			);
+			const submitButton = screen.getByRole('button', {
+				name: /reset password/i,
+			});
+
+			await user.type(passwordInput, 'newPassword123');
+			await user.type(confirmPasswordInput, 'newPassword123');
+
+			await waitFor(
+				() => {
+					expect(submitButton).not.toHaveAttribute('aria-disabled', 'true');
+				},
+				{ timeout: 200 },
+			);
+
+			await user.click(submitButton);
+
+			await waitFor(() => {
+				expect(mockSuccessNotification).toHaveBeenCalled();
+				expect(mockNavigate).toHaveBeenCalledWith(ROUTES.LOGIN);
+			});
+		});
+	});
+
+	describe('Error Handling', () => {
+		it('displays error message when reset password API fails', async () => {
+			const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+			server.use(
+				rest.post(RESET_PASSWORD_ENDPOINT, (_req, res, ctx) =>
+					res(
+						ctx.status(400),
+						ctx.json({
+							error: {
+								code: 'INVALID_TOKEN',
+								message: 'Invalid or expired reset token',
+							},
+						}),
+					),
+				),
+			);
+
+			render(<ResetPassword version="1.0.0" />, undefined, {
+				initialRoute: '/password-reset?token=invalid-token',
+			});
+
+			const passwordInput = screen.getByPlaceholderText(/enter new password/i);
+			const confirmPasswordInput = screen.getByPlaceholderText(
+				/confirm your new password/i,
+			);
+			const submitButton = screen.getByRole('button', {
+				name: /reset password/i,
+			});
+
+			await user.type(passwordInput, 'newPassword123');
+			await user.type(confirmPasswordInput, 'newPassword123');
+
+			await waitFor(
+				() => {
+					expect(submitButton).not.toHaveAttribute('aria-disabled', 'true');
+				},
+				{ timeout: 200 },
+			);
+
+			await user.click(submitButton);
+
+			await waitFor(() => {
+				expect(
+					screen.getByText(/invalid or expired reset token/i),
+				).toBeInTheDocument();
+			});
+		});
+
+		it('does not show API error when password mismatch error is shown', async () => {
+			const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+			server.use(
+				rest.post(RESET_PASSWORD_ENDPOINT, (_req, res, ctx) =>
+					res(
+						ctx.status(400),
+						ctx.json({
+							error: {
+								code: 'INVALID_TOKEN',
+								message: 'Invalid token',
+							},
+						}),
+					),
+				),
+			);
+
+			render(<ResetPassword version="1.0.0" />, undefined, {
+				initialRoute: '/password-reset?token=reset-token-123',
+			});
+
+			const passwordInput = screen.getByPlaceholderText(/enter new password/i);
+			const confirmPasswordInput = screen.getByPlaceholderText(
+				/confirm your new password/i,
+			);
+
+			await user.type(passwordInput, 'password123');
+			await user.type(confirmPasswordInput, 'password456');
+			await user.tab(); // Blur the confirm password field to trigger validation
+
+			await waitFor(() => {
+				expect(screen.getByText(/passwords don't match/i)).toBeInTheDocument();
+				expect(screen.queryByText(/invalid token/i)).not.toBeInTheDocument();
+			});
+		});
+
+		it('clears API error when the user edits the password', async () => {
+			const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+			server.use(
+				rest.post(RESET_PASSWORD_ENDPOINT, (_req, res, ctx) =>
+					res(
+						ctx.status(400),
+						ctx.json({
+							error: {
+								code: 'invalid_password',
+								message: 'password must be at least 8 characters long',
+							},
+						}),
+					),
+				),
+			);
+
+			render(<ResetPassword version="1.0.0" />, undefined, {
+				initialRoute: '/password-reset?token=reset-token-123',
+			});
+
+			const passwordInput = screen.getByPlaceholderText(/enter new password/i);
+			const confirmPasswordInput = screen.getByPlaceholderText(
+				/confirm your new password/i,
+			);
+			const submitButton = screen.getByRole('button', {
+				name: /reset password/i,
+			});
+
+			await user.type(passwordInput, 'weak');
+			await user.type(confirmPasswordInput, 'weak');
+
+			await waitFor(() => {
+				expect(submitButton).not.toHaveAttribute('aria-disabled', 'true');
+			});
+
+			await user.click(submitButton);
+
+			await waitFor(() => {
+				expect(
+					screen.getByText(/password must be at least 8 characters long/i),
+				).toBeInTheDocument();
+			});
+
+			await user.type(passwordInput, 'Er1!');
+
+			await waitFor(() => {
+				expect(
+					screen.queryByText(/password must be at least 8 characters long/i),
+				).not.toBeInTheDocument();
+			});
+
+			await user.type(confirmPasswordInput, 'Er1!');
+
+			await waitFor(() => {
+				expect(submitButton).not.toHaveAttribute('aria-disabled', 'true');
+			});
+		});
+	});
+
+	describe('Loading States', () => {
+		it('disables submit button during password reset', async () => {
+			const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+			server.use(
+				rest.post(RESET_PASSWORD_ENDPOINT, (_req, res, ctx) =>
+					res(
+						ctx.delay(100),
+						ctx.status(200),
+						ctx.json({
+							status: 'success',
+							message: 'Password reset successfully',
+						}),
+					),
+				),
+			);
+
+			render(<ResetPassword version="1.0.0" />, undefined, {
+				initialRoute: '/password-reset?token=reset-token-123',
+			});
+
+			const passwordInput = screen.getByPlaceholderText(/enter new password/i);
+			const confirmPasswordInput = screen.getByPlaceholderText(
+				/confirm your new password/i,
+			);
+			const submitButton = screen.getByRole('button', {
+				name: /reset password/i,
+			});
+
+			await user.type(passwordInput, 'newPassword123');
+			await user.type(confirmPasswordInput, 'newPassword123');
+
+			await waitFor(
+				() => {
+					expect(submitButton).not.toHaveAttribute('aria-disabled', 'true');
+				},
+				{ timeout: 200 },
+			);
+
+			await user.click(submitButton);
+
+			// Button should be disabled during API call
+			await waitFor(() => {
+				expect(submitButton).toHaveAttribute('aria-disabled', 'true');
+			});
+		});
+	});
+
+	describe('Enter key submission', () => {
+		function mockReset(delayMs = 0): { resetCalls: () => number } {
+			let calls = 0;
+			server.use(
+				rest.post(RESET_PASSWORD_ENDPOINT, (_req, res, ctx) => {
+					calls += 1;
+					return res(
+						ctx.delay(delayMs),
+						ctx.status(200),
+						ctx.json({ status: 'success', message: 'Password reset successfully' }),
+					);
+				}),
+			);
+			return { resetCalls: (): number => calls };
+		}
+
+		async function typeMatchingPasswords(
+			user: ReturnType<typeof userEvent.setup>,
+		): Promise<HTMLElement> {
+			await user.type(
+				screen.getByPlaceholderText(/enter new password/i),
+				'newPassword123',
+			);
+			const confirmPasswordInput = screen.getByPlaceholderText(
+				/confirm your new password/i,
+			);
+			await user.type(confirmPasswordInput, 'newPassword123');
+			await waitFor(() => {
+				expect(
+					screen.getByRole('button', { name: /reset password/i }),
+				).not.toHaveAttribute('aria-disabled', 'true');
+			});
+			return confirmPasswordInput;
+		}
+
+		it('resets once on Enter in the confirm password field', async () => {
+			const user = userEvent.setup({ pointerEventsCheck: 0 });
+			const { resetCalls } = mockReset();
+
+			render(<ResetPassword version="1.0.0" />, undefined, {
+				initialRoute: '/password-reset?token=reset-token-123',
+			});
+
+			const confirmPasswordInput = await typeMatchingPasswords(user);
+			await user.type(confirmPasswordInput, '{enter}');
+
+			await waitFor(() => {
+				expect(mockNavigate).toHaveBeenCalledWith(ROUTES.LOGIN);
+			});
+			expect(resetCalls()).toBe(1);
+		});
+
+		it('does not reset on Enter while the passwords do not match', async () => {
+			const user = userEvent.setup({ pointerEventsCheck: 0 });
+			const { resetCalls } = mockReset();
+
+			render(<ResetPassword version="1.0.0" />, undefined, {
+				initialRoute: '/password-reset?token=reset-token-123',
+			});
+
+			await user.type(
+				screen.getByPlaceholderText(/enter new password/i),
+				'password123',
+			);
+			await user.type(
+				screen.getByPlaceholderText(/confirm your new password/i),
+				'password456{enter}',
+			);
+			expect(
+				screen.getByRole('button', { name: /reset password/i }),
+			).toHaveAttribute('aria-disabled', 'true');
+
+			// Give a wrongly sent request time to land before asserting it never did.
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			expect(resetCalls()).toBe(0);
+		});
+
+		it('does not reset again on Enter while the first reset is loading', async () => {
+			const user = userEvent.setup({ pointerEventsCheck: 0 });
+			const { resetCalls } = mockReset(1000);
+
+			render(<ResetPassword version="1.0.0" />, undefined, {
+				initialRoute: '/password-reset?token=reset-token-123',
+			});
+
+			const confirmPasswordInput = await typeMatchingPasswords(user);
+			await user.type(confirmPasswordInput, '{enter}');
+
+			await waitFor(() => {
+				expect(
+					screen.getByRole('button', { name: /reset password/i }),
+				).toHaveAttribute('aria-disabled', 'true');
+			});
+			await user.type(confirmPasswordInput, '{enter}');
+
+			await waitFor(
+				() => {
+					expect(mockNavigate).toHaveBeenCalledWith(ROUTES.LOGIN);
+				},
+				{ timeout: 2000 },
+			);
+			expect(resetCalls()).toBe(1);
+		});
+	});
+});

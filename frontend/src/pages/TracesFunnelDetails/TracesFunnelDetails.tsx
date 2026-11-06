@@ -1,0 +1,45 @@
+import { useAppParams } from 'lib/router/useAppParams';
+import { Typography } from '@signozhq/ui/typography';
+import Spinner from 'components/Spinner';
+import { NotFoundContainer } from 'container/WidgetCard/Card/FullView/styles';
+import { useFunnelDetails } from 'hooks/TracesFunnels/useFunnels';
+import { FunnelProvider } from 'pages/TracesFunnels/FunnelContext';
+
+import FunnelConfiguration from './components/FunnelConfiguration/FunnelConfiguration';
+import FunnelResults from './components/FunnelResults/FunnelResults';
+
+import './TracesFunnelDetails.styles.scss';
+
+function TracesFunnelDetails(): JSX.Element {
+	const { funnelId } = useAppParams<'funnelId'>();
+	const { data, isLoading, isError } = useFunnelDetails({
+		funnelId: funnelId || '',
+	});
+
+	if (isLoading || !data?.payload) {
+		return <Spinner size="large" tip="Loading..." />;
+	}
+
+	if (isError) {
+		return (
+			<NotFoundContainer>
+				<Typography>Error loading funnel details</Typography>
+			</NotFoundContainer>
+		);
+	}
+
+	return (
+		<FunnelProvider funnelId={funnelId || ''}>
+			<div className="traces-funnel-details">
+				<div className="traces-funnel-details__steps-config">
+					<FunnelConfiguration funnel={data.payload} />
+				</div>
+				<div className="traces-funnel-details__steps-results">
+					<FunnelResults />
+				</div>
+			</div>
+		</FunnelProvider>
+	);
+}
+
+export default TracesFunnelDetails;

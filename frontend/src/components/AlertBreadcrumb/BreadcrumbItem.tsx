@@ -1,0 +1,46 @@
+import { ReactNode } from 'react';
+import { Button } from '@signozhq/ui/button';
+import { useSafeNavigate } from 'hooks/useSafeNavigate';
+import { isModifierKeyPressed } from 'utils/app';
+
+import styles from './BreadcrumbItem.module.scss';
+
+export type BreadcrumbItemConfig =
+	| {
+			title: string | null;
+			route?: string;
+	  }
+	| {
+			title: ReactNode;
+			isLast?: true;
+	  };
+
+function BreadcrumbItem({
+	title,
+	...props
+}: BreadcrumbItemConfig): JSX.Element {
+	const { safeNavigate } = useSafeNavigate();
+
+	if ('isLast' in props) {
+		return <div className={styles.itemLast}>{title}</div>;
+	}
+
+	return (
+		<Button
+			size="md"
+			variant="link"
+			color="secondary"
+			onClick={(e: React.MouseEvent): void => {
+				if (!('route' in props) || !props.route) {
+					return;
+				}
+
+				safeNavigate(props.route, { newTab: isModifierKeyPressed(e) });
+			}}
+		>
+			{title}
+		</Button>
+	);
+}
+
+export default BreadcrumbItem;

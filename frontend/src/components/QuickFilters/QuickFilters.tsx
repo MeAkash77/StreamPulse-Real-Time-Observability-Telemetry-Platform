@@ -1,0 +1,416 @@
+import { useMemo, useState } from 'react';
+import {
+	ArrowUpToLine,
+	Frown,
+	RefreshCw,
+	Settings2 as SettingsIcon,
+} from '@signozhq/icons';
+import {
+	Combobox,
+	ComboboxCommand,
+	ComboboxContent,
+	ComboboxItem,
+	ComboboxList,
+	ComboboxTrigger,
+} from '@signozhq/ui/combobox';
+import { Skeleton } from 'antd';
+import { Button } from '@signozhq/ui/button';
+import { Tooltip } from '@signozhq/ui/tooltip';
+import { Switch } from '@signozhq/ui/switch';
+import { Typography } from '@signozhq/ui/typography';
+import logEvent from 'api/common/logEvent';
+import classNames from 'classnames';
+import OverlayScrollbar from 'components/OverlayScrollbar/OverlayScrollbar';
+import { PANEL_TYPES } from 'constants/queryBuilder';
+import { useApiMonitoringParams } from 'container/ApiMonitoring/queryParams';
+import { useQueryBuilder } from 'hooks/queryBuilder/useQueryBuilder';
+import { AuthZGuardContent } from 'lib/authz/components/AuthZGuard/AuthZGuardContent';
+import AuthZButton from 'lib/authz/components/AuthZButton/AuthZButton';
+import { useAuthZ } from 'lib/authz/hooks/useAuthZ/useAuthZ';
+import {
+	QuickFilterManagePermissions,
+	QuickFilterReadPermission,
+} from 'lib/authz/hooks/useAuthZ/permissions/quick-filter.permissions';
+import { isFunction } from 'lodash-es';
+import { Query } from 'types/api/queryBuilder/queryBuilderData';
+
+import useActiveQueryIndex from './hooks/useActiveQueryIndex';
+import CheckboxV2 from './FilterRenderers/Checkbox/v2/CheckboxFilterV2';
+import Duration from './FilterRenderers/Duration/Duration';
+import Slider from './FilterRenderers/Slider/Slider';
+import useFilterConfig from './hooks/useFilterConfig';
+import QuickFiltersSettings from './QuickFiltersSettings/QuickFiltersSettings';
+import { FiltersType, IQuickFiltersProps, QuickFiltersSource } from './types';
+
+import './QuickFilters.styles.scss';
+
+export default function QuickFilters(props: IQuickFiltersProps): JSX.Element {
+	const {
+		className,
+		config,
+		handleFilterVisibilityChange,
+		quickFilterSource,
+		onFilterChange,
+		onQuickFilterChange,
+		showFilterCollapse = true,
+		showQueryName = true,
+		useFieldApis,
+		savedViewsHeader,
+	} = props;
+	const savedFiltersSource =
+		quickFilterSource === QuickFiltersSource.INFRA_MONITORING
+			? undefined
+			: quickFilterSource;
+	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+	const [params, setParams] = useApiMonitoringParams();
+	const showIP = params.showIP ?? true;
+
+	const {
+		filterConfig,
+		isDynamicFilters,
+		customFilters,
+		refetchCustomFilters,
+		isCustomFiltersLoading,
+	} = useFilterConfig({ savedFiltersSource, config });
+	const {
+		deniedPermissions: deniedSettingsPermissions,
+		isLoading: isSettingsChecking,
+	} = useAuthZ(QuickFilterManagePermissions, { enabled: isDynamicFilters });
+	const isSettingsDisabled =
+		isSettingsChecking || deniedSettingsPermissions.length > 0;
+
+	const {
+		currentQuery,
+		lastUsedQuery,
+		setLastUsedQuery,
+		redirectWithQueryBuilderData,
+		panelType,
+	} = useQueryBuilder();
+	const [open, setOpen] = useState(false);
+
+	// Sync lastUsedQuery when queries change (e.g., after deletion)
+	const validQueryIndex = useMemo(
+		() =>
+			Math.min(
+				lastUsedQuery || 0,
+				(currentQuery?.builder?.queryData?.length || 1) - 1,
+			),
+		[lastUsedQuery, currentQuery?.builder?.queryData?.length],
+	);
+
+	// Determine if we're in ListView mode
+	const isListView = panelType === PANEL_TYPES.LIST;
+
+	// Generate query options based on available queries
+	const queryOptions = useMemo(() => {
+		if (!currentQuery?.builder?.queryData) {
+			return [];
+		}
+
+		return currentQuery.builder.queryData.map((query, index) => ({
+			label: query.queryName || String.fromCharCode(65 + index),
+			value: index,
+		}));
+	}, [currentQuery?.builder?.queryData]);
+
+	// Show dropdown in ListView only for TRACES_EXPLORER source
+	const shouldShowDropdownInListView =
+		isListView && quickFilterSource === QuickFiltersSource.TRACES_EXPLORER;
+
+	// AI observability builds a single query in the row-level views, so there is
+	// no query for the selector to switch between.
+	const isAIObservabilityRowView =
+		quickFilterSource === QuickFiltersSource.AI_OBSERVABILITY &&
+		(isListView || panelType === PANEL_TYPES.TRACE);
+
+	const activeQueryIndex = useActiveQueryIndex(quickFilterSource);
+
+	// clear all the filters for the query which is in sync with filters
+	const handleReset = (): void => {
+		const activeQuery = currentQuery?.builder.queryData?.[activeQueryIndex];
+
+		if (!activeQuery) {
+			return;
+		}
+
+		const preparedQuery: Query = {
+			...currentQuery,
+			builder: {
+				...currentQuery.builder,
+				queryData: currentQuery.builder.queryData.map((item, idx) => {
+					if (idx !== activeQueryIndex) {
+						return item;
+					}
+
+					return {
+						...item,
+						filter: {
+							...item.filter,
+							expression: '',
+						},
+						filters: {
+							...item.filters,
+							items: [],
+							op: item.filters?.op || 'AND',
+						},
+					};
+				}),
+			},
+		};
+
+		if (onFilterChange && isFunction(onFilterChange)) {
+			onFilterChange(preparedQuery);
+		} else {
+			redirectWithQueryBuilderData(preparedQuery);
+		}
+	};
+
+	const lastQueryName =
+		showQueryName &&
+		currentQuery.builder.queryData?.[lastUsedQuery || 0]?.queryName;
+
+	// In ListView, always show the 0th query's name; otherwise use the active query's name
+	const displayedQueryName =
+		isListView || isAIObservabilityRowView
+			? showQueryName && currentQuery.builder.queryData?.[0]?.queryName
+			: lastQueryName;
+
+	const handleQueryChange = (value: number): void => {
+		setLastUsedQuery(value);
+	};
+
+	// Helpers to reduce cognitive complexity in main render
+	const renderLeftActions = (): JSX.Element => (
+		<section className="left-actions">
+			<Typography.Text className="text">
+				{displayedQueryName ? 'Filters for' : 'Filters'}
+			</Typography.Text>
+			{queryOptions.length > 1 &&
+			!isAIObservabilityRowView &&
+			(!isListView || shouldShowDropdownInListView) ? (
+				<Combobox open={open} onOpenChange={setOpen}>
+					<ComboboxTrigger
+						placeholder="Select a query"
+						value={queryOptions.find((f) => f.value === validQueryIndex)?.label || ''}
+						className="select-box"
+					/>
+					{open && (
+						<ComboboxContent>
+							<ComboboxCommand>
+								<ComboboxList>
+									{queryOptions.map((option) => (
+										<ComboboxItem
+											key={option.value}
+											value={String(option.value)}
+											onSelect={(): void => {
+												handleQueryChange(option.value);
+												setOpen(false);
+											}}
+											isSelected={validQueryIndex === option.value}
+										>
+											{option.label}
+										</ComboboxItem>
+									))}
+								</ComboboxList>
+							</ComboboxCommand>
+						</ComboboxContent>
+					)}
+				</Combobox>
+			) : (
+				displayedQueryName && (
+					<Tooltip
+						title={`Filter currently in sync with query ${displayedQueryName}`}
+					>
+						<Typography.Text className="sync-tag">
+							{displayedQueryName}
+						</Typography.Text>
+					</Tooltip>
+				)
+			)}
+		</section>
+	);
+
+	const renderRightActions = (): JSX.Element => (
+		<section className="right-actions">
+			<Tooltip title="Reset All">
+				<Button
+					variant="ghost"
+					color="secondary"
+					size="sm"
+					icon
+					aria-label="Reset All"
+					onClick={handleReset}
+				>
+					<RefreshCw size={14} />
+				</Button>
+			</Tooltip>
+			{showFilterCollapse && handleFilterVisibilityChange && (
+				<Tooltip title="Collapse Filters">
+					<Button
+						variant="ghost"
+						color="secondary"
+						size="sm"
+						icon
+						aria-label="Collapse Filters"
+						onClick={handleFilterVisibilityChange}
+					>
+						<ArrowUpToLine style={{ rotate: '270deg' }} size={14} />
+					</Button>
+				</Tooltip>
+			)}
+			{isDynamicFilters &&
+				(isSettingsDisabled ? (
+					<AuthZButton
+						checks={QuickFilterManagePermissions}
+						variant="ghost"
+						color="secondary"
+						size="sm"
+						icon
+						aria-label="Settings"
+						onClick={(): void => setIsSettingsOpen(true)}
+						testId="settings-icon-container"
+					>
+						<SettingsIcon data-testid="settings-icon" size={14} />
+					</AuthZButton>
+				) : (
+					<Tooltip title="Settings">
+						<Button
+							variant="ghost"
+							color="secondary"
+							size="sm"
+							icon
+							aria-label="Settings"
+							aria-expanded={isSettingsOpen}
+							onClick={(): void => setIsSettingsOpen(true)}
+							testId="settings-icon-container"
+						>
+							<SettingsIcon data-testid="settings-icon" size={14} />
+						</Button>
+					</Tooltip>
+				))}
+		</section>
+	);
+
+	const renderContent = (): JSX.Element => (
+		<>
+			{quickFilterSource === QuickFiltersSource.API_MONITORING && (
+				<div className="api-quick-filters-header">
+					<Typography.Text>Show IP addresses</Typography.Text>
+					<Switch
+						color="primary"
+						textPlacement="right"
+						value={showIP ?? true}
+						onChange={(checked): void => {
+							logEvent('API Monitoring: Show IP addresses clicked', {
+								showIP: checked,
+							});
+							setParams({ showIP: checked });
+						}}
+					/>
+				</div>
+			)}
+			<section className="filters">
+				{filterConfig.map((filter) => {
+					switch (filter.type) {
+						case FiltersType.DURATION:
+							return (
+								<Duration
+									key={filter.attributeKey.key}
+									quickFilterSource={quickFilterSource}
+									filter={filter}
+									onFilterChange={onFilterChange}
+								/>
+							);
+						case FiltersType.SLIDER:
+							return <Slider key={filter.attributeKey.key} />;
+						default:
+							return (
+								<CheckboxV2
+									key={filter.attributeKey.key}
+									quickFilterSource={quickFilterSource}
+									filter={filter}
+									onFilterChange={onFilterChange}
+									onQuickFilterChange={onQuickFilterChange}
+									useFieldApis={useFieldApis}
+								/>
+							);
+					}
+				})}
+
+				{filterConfig.length === 0 && (
+					<div className="no-filters-container">
+						<Frown size={16} />
+						<Typography.Text>No filters found</Typography.Text>
+					</div>
+				)}
+			</section>
+		</>
+	);
+
+	const filtersSkeleton = (
+		<div className="quick-filters-skeleton">
+			{Array.from({ length: 5 }).map((_, index) => (
+				// eslint-disable-next-line react/no-array-index-key
+				<Skeleton.Input active size="small" key={index} />
+			))}
+		</div>
+	);
+
+	const filtersContent = isCustomFiltersLoading ? (
+		filtersSkeleton
+	) : (
+		<OverlayScrollbar>{renderContent()}</OverlayScrollbar>
+	);
+
+	return (
+		<div className="quick-filters-container">
+			<div className="quick-filters">
+				{savedViewsHeader}
+				{quickFilterSource !== QuickFiltersSource.INFRA_MONITORING && (
+					<section className="header">
+						{renderLeftActions()}
+						{renderRightActions()}
+					</section>
+				)}
+
+				{savedFiltersSource ? (
+					<AuthZGuardContent
+						checks={[QuickFilterReadPermission]}
+						fallbackOnLoading={filtersSkeleton}
+					>
+						{filtersContent}
+					</AuthZGuardContent>
+				) : (
+					filtersContent
+				)}
+			</div>
+			<div className="quick-filters-settings-container">
+				<div
+					className={classNames(
+						'quick-filters-settings',
+						{
+							hidden: !isSettingsOpen,
+						},
+						className,
+					)}
+				>
+					{isSettingsOpen && savedFiltersSource && (
+						<QuickFiltersSettings
+							savedFiltersSource={savedFiltersSource}
+							setIsSettingsOpen={setIsSettingsOpen}
+							customFilters={customFilters}
+							refetchCustomFilters={refetchCustomFilters}
+						/>
+					)}
+				</div>
+			</div>
+		</div>
+	);
+}
+
+QuickFilters.defaultProps = {
+	onFilterChange: null,
+	config: [],
+	showFilterCollapse: true,
+	showQueryName: true,
+};

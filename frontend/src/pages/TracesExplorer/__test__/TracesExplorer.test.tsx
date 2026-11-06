@@ -1,0 +1,340 @@
+import { ENVIRONMENT } from 'constants/env';
+import ROUTES from 'constants/routes';
+import { getCurrentLocation } from 'lib/router/navigation';
+import { quickFiltersListResponse } from 'mocks-server/__mockdata__/customQuickFilters';
+import {
+	queryRangeForListView,
+	queryRangeForTableView,
+	queryRangeForTableViewV5,
+	queryRangeForTraceView,
+} from 'mocks-server/__mockdata__/query_range';
+import { server } from 'mocks-server/server';
+import { rest } from 'msw';
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+	within,
+} from 'tests/test-utils';
+import { QueryRangePayloadV5 } from 'types/api/v5/queryRange';
+
+import TracesExplorer from '..';
+import { optionMenuReturn, qbProviderValue } from './testUtils';
+
+const currentTestUrl =
+	'/traces-explorer/?panelType=list&selectedExplorerView=list';
+
+jest.mock('lib/router/useAppSearchParams', () => ({
+	...jest.requireActual('lib/router/useAppSearchParams'),
+	useAppSearchParams: jest.fn(() => {
+		const searchParams = new URLSearchParams();
+
+		// Parse the current test URL
+		const url = new URL(currentTestUrl, 'http://localhost');
+		const panelType = url.searchParams.get('panelType') || 'list';
+		const selectedExplorerView =
+			url.searchParams.get('selectedExplorerView') || 'list';
+
+		searchParams.set('panelType', panelType);
+		searchParams.set('selectedExplorerView', selectedExplorerView);
+
+		return [searchParams, jest.fn()];
+	}),
+}));
+
+// Mock useGetPanelTypesQueryParam to return the correct panel type
+jest.mock('hooks/queryBuilder/useGetPanelTypesQueryParam', () => ({
+	useGetPanelTypesQueryParam: jest.fn(() => {
+		const url = new URL(currentTestUrl, 'http://localhost');
+		return url.searchParams.get('panelType') || 'list';
+	}),
+}));
+
+const BASE_URL = ENVIRONMENT.baseURL;
+const FILTER_SERVICE_NAME = 'Service Name';
+
+jest.mock(
+	'components/Uplot/Uplot',
+	() =>
+		function MockUplot(): JSX.Element {
+			return <div>MockUplot</div>;
+		},
+);
+
+window.ResizeObserver =
+	window.ResizeObserver ||
+	jest.fn().mockImplementation(() => ({
+		disconnect: jest.fn(),
+		observe: jest.fn(),
+		unobserve: jest.fn(),
+	}));
+
+const successNotification = jest.fn();
+jest.mock('hooks/useNotifications', () => ({
+	__esModule: true,
+	useNotifications: jest.fn(() => ({
+		notifications: {
+			success: successNotification,
+			error: jest.fn(),
+		},
+	})),
+}));
+
+jest.mock(
+	'container/TopNav/DateTimeSelectionV2/index.tsx',
+	() =>
+		function MockDateTimeSelection(): JSX.Element {
+			return <div>MockDateTimeSelection</div>;
+		},
+);
+
+jest.mock('container/OptionsMenu/useOptionsMenu', () => ({
+	__esModule: true,
+	default: (): any => optionMenuReturn,
+}));
+
+jest.mock('react-redux', () => ({
+	...jest.requireActual('react-redux'),
+	useSelector: (): any => ({
+		loading: false,
+	}),
+}));
+
+jest.mock('hooks/useSafeNavigate', () => ({
+	useSafeNavigate: (): any => ({
+		safeNavigate: jest.fn(),
+	}),
+}));
+
+const renderWithTracesExplorerRouter = (
+	component: React.ReactElement,
+	initialEntries: string[] = [
+		'/traces-explorer/?panelType=list&selectedExplorerView=list',
+	],
+): ReturnType<typeof render> =>
+	render(
+		component,
+		{},
+		{
+			initialRoute: initialEntries[0],
+			queryBuilderOverrides: qbProviderValue,
+		},
+	);
+
+const handleExplorerTabChangeTest = jest.fn();
+jest.mock('hooks/useHandleExplorerTabChange', () => ({
+	useHandleExplorerTabChange: jest.fn(() => ({
+		handleExplorerTabChange: handleExplorerTabChangeTest,
+	})),
+}));
+
+let capturedPayload: QueryRangePayloadV5;
+
+describe('TracesExplorer -', () => {
+	const quickFiltersListURL = `${BASE_URL}/api/v2/quick_filters/traces`;
+
+	const setupServer = (): void => {
+		server.use(
+			rest.get(quickFiltersListURL, (_, res, ctx) =>
+				res(ctx.status(200), ctx.json(quickFiltersListResponse)),
+			),
+		);
+		server.use(
+			rest.post(`${BASE_URL}/api/v5/query_range`, (req, res, ctx) =>
+				res(ctx.status(200), ctx.json(queryRangeForTableView)),
+			),
+		);
+	};
+
+	beforeEach(() => {
+		setupServer();
+	});
+
+	afterEach(() => {
+		server.resetHandlers();
+	});
+
+	afterAll(() => {
+		server.close();
+		cleanup();
+	});
+
+	it.skip('trace explorer - list view', async () => {
+		server.use(
+			rest.post(`${BASE_URL}/api/v5/query_range`, (req, res, ctx) =>
+				res(ctx.status(200), ctx.json(queryRangeForListView)),
+			),
+		);
+
+		renderWithTracesExplorerRouter(<TracesExplorer />);
+
+		await screen.findByText(FILTER_SERVICE_NAME);
+
+		await screen.findByText('demo-app');
+		expect(
+			screen.getByTestId('periscope-btn-options-traces'),
+		).toBeInTheDocument();
+
+		// the list scrolls instead of paging
+		expect(screen.queryByTestId('pagination-page-size')).not.toBeInTheDocument();
+
+		// column interaction is covered in E2E tests as its a complex interaction
+	});
+
+	it('should not add id to orderBy when dataSource is traces', async () => {
+		server.use(
+			rest.post(`${BASE_URL}/api/v5/query_range`, async (req, res, ctx) => {
+				const payload = await req.json();
+				capturedPayload = payload;
+				return res(ctx.status(200), ctx.json(queryRangeForTableView));
+			}),
+		);
+
+		renderWithTracesExplorerRouter(<TracesExplorer />, [
+			'/traces-explorer/?panelType=list&selectedExplorerView=list',
+		]);
+
+		await waitFor(() => {
+			expect(capturedPayload).toBeDefined();
+		});
+
+		expect(
+			(capturedPayload.compositeQuery.queries[0].spec as any).order,
+		).toStrictEqual([{ key: { name: 'timestamp' }, direction: 'desc' }]);
+	});
+
+	it.skip('trace explorer - table view', async () => {
+		server.use(
+			rest.post(`${BASE_URL}/api/v5/query_range`, (req, res, ctx) =>
+				res(ctx.status(200), ctx.json(queryRangeForTableViewV5)),
+			),
+		);
+
+		renderWithTracesExplorerRouter(<TracesExplorer />, [
+			'/traces-explorer/?panelType=table&selectedExplorerView=table',
+		]);
+
+		// Wait for the data to load and check for actual table data
+		await screen.findByText('401310');
+		expect(screen.getByText('401310')).toBeInTheDocument();
+	});
+
+	// skipping since we dont have trace view with new query builder for the time being
+
+	it.skip('trace explorer - trace view', async () => {
+		server.use(
+			rest.post(`${BASE_URL}/api/v5/query_range`, (req, res, ctx) =>
+				res(ctx.status(200), ctx.json(queryRangeForTraceView)),
+			),
+		);
+
+		const { getByText, getAllByText } = renderWithTracesExplorerRouter(
+			<TracesExplorer />,
+			['/traces-explorer/?panelType=trace&selectedExplorerView=trace'],
+		);
+
+		await expect(
+			screen.findByText('Root Service Name'),
+		).resolves.toBeInTheDocument();
+
+		// assert table headers
+		expect(getByText('Root Operation Name')).toBeInTheDocument();
+		expect(getByText('Root Duration (in ms)')).toBeInTheDocument();
+		expect(getByText('TraceID')).toBeInTheDocument();
+		expect(getByText('No of Spans')).toBeInTheDocument();
+
+		// assert row values
+		['demo-app', 'home', '8'].forEach((val) =>
+			expect(getAllByText(val)[0]).toBeInTheDocument(),
+		);
+		expect(getByText('7245.23ms')).toBeInTheDocument();
+
+		// assert traceId and redirection to trace details
+		const traceId = getByText('5765b60ba7cc4ddafe8bdaa9c1b4b246');
+		fireEvent.click(traceId);
+
+		// assert redirection - should go to /trace/:traceId
+		expect(window.location.href).toBe(
+			'http://localhost/trace/5765b60ba7cc4ddafe8bdaa9c1b4b246',
+		);
+	});
+
+	it('trace explorer - trace view should only send order by timestamp in the query', async () => {
+		let capturedPayload: QueryRangePayloadV5;
+		const orderBy = [
+			{ columnName: 'id', order: 'desc' },
+			{ columnName: 'serviceName', order: 'desc' },
+		];
+		const defaultOrderBy = [
+			{
+				key: { name: 'timestamp' },
+				direction: 'desc',
+			},
+		];
+		server.use(
+			rest.post(`${BASE_URL}/api/v5/query_range`, async (req, res, ctx) => {
+				const payload = await req.json();
+				capturedPayload = payload;
+				return res(ctx.status(200), ctx.json(queryRangeForTraceView));
+			}),
+		);
+
+		renderWithTracesExplorerRouter(<TracesExplorer />, [
+			'/traces-explorer/?panelType=trace&selectedExplorerView=trace',
+		]);
+
+		await waitFor(() => {
+			expect(capturedPayload).toBeDefined();
+			expect(
+				(capturedPayload?.compositeQuery?.queries[0].spec as any).order,
+			).toStrictEqual(defaultOrderBy);
+			expect(
+				(capturedPayload?.compositeQuery?.queries[0].spec as any).order,
+			).not.toStrictEqual(orderBy);
+		});
+	});
+
+	it('create a dashboard btn assert', async () => {
+		renderWithTracesExplorerRouter(<TracesExplorer />, [
+			'/traces-explorer/?panelType=list&selectedExplorerView=list',
+		]);
+
+		const createDashboardBtn = await screen.findByTestId(
+			'explorer-add-to-dashboard',
+		);
+		await waitFor(() =>
+			expect(createDashboardBtn).not.toHaveAttribute('aria-disabled', 'true'),
+		);
+		fireEvent.click(createDashboardBtn);
+
+		const createDashboardModal = (await screen.findByRole(
+			'dialog',
+		)) as HTMLElement;
+		expect(createDashboardModal).toBeInTheDocument();
+
+		// assert modal content
+		expect(
+			within(createDashboardModal).getByTestId('export-panel-new-dashboard'),
+		).toBeInTheDocument();
+
+		expect(
+			within(createDashboardModal).getByTestId('export-panel-export'),
+		).toBeInTheDocument();
+	});
+
+	it('create an alert btn assert', async () => {
+		renderWithTracesExplorerRouter(<TracesExplorer />, [
+			'/traces-explorer/?panelType=list&selectedExplorerView=list',
+		]);
+
+		const createAlertBtn = await screen.findByTestId('explorer-create-alert');
+		await waitFor(() =>
+			expect(createAlertBtn).not.toHaveAttribute('aria-disabled', 'true'),
+		);
+		fireEvent.click(createAlertBtn);
+
+		expect(getCurrentLocation().pathname).toBe(ROUTES.ALERTS_NEW);
+	});
+});

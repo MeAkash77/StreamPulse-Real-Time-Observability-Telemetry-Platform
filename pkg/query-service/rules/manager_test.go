@@ -1,0 +1,254 @@
+package rules
+
+import (
+	"context"
+	"encoding/json"
+	"math"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/SigNoz/signoz/pkg/alertmanager"
+	"github.com/SigNoz/signoz/pkg/alertmanager/alertmanagerserver"
+	alertmanagermock "github.com/SigNoz/signoz/pkg/alertmanager/alertmanagertest"
+	"github.com/SigNoz/signoz/pkg/instrumentation/instrumentationtest"
+	"github.com/SigNoz/signoz/pkg/prometheus"
+	"github.com/SigNoz/signoz/pkg/prometheus/prometheustest"
+	"github.com/SigNoz/signoz/pkg/sqlstore"
+	"github.com/SigNoz/signoz/pkg/sqlstore/sqlstoretest"
+	"github.com/SigNoz/signoz/pkg/telemetrystore"
+	"github.com/SigNoz/signoz/pkg/telemetrystore/telemetrystoretest"
+	"github.com/SigNoz/signoz/pkg/types/alertmanagertypes"
+	"github.com/SigNoz/signoz/pkg/types/metrictypes"
+	"github.com/SigNoz/signoz/pkg/types/ruletypes"
+	"github.com/SigNoz/signoz/pkg/valuer"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+
+	cmock "github.com/SigNoz/clickhouse-go-mock"
+)
+
+func TestManager_ListRules_ValidatesParams(t *testing.T) {
+	m, err := NewManager(&ManagerOptions{})
+	require.NoError(t, err)
+
+	_, err = m.ListRules(context.Background(), &ruletypes.ListRulesParams{Limit: -1})
+	require.ErrorContains(t, err, "invalid limit")
+
+	_, err = m.ListRules(context.Background(), &ruletypes.ListRulesParams{ListFilter: ruletypes.ListFilter{States: []string{"bogus"}}})
+	require.ErrorContains(t, err, `invalid state "bogus"`)
+}
+
+func TestManager_TestNotification_SendUnmatched_ThresholdRule(t *testing.T) {
+	target := 10.0
+	recovery := 5.0
+
+	for _, tc := range TcTestNotiSendUnmatchedThresholdRule {
+		t.Run(tc.Name, func(t *testing.T) {
+			rule := ThresholdRuleAtLeastOnceValueAbove(target, &recovery)
+
+			// Marshal rule to JSON as TestNotification expects
+			ruleBytes, err := json.Marshal(rule)
+			require.NoError(t, err)
+
+			orgID := valuer.GenerateUUID()
+
+			// for saving temp alerts that are triggered via TestNotification
+			triggeredTestAlerts := []map[*alertmanagertypes.PostableAlert][]string{}
+
+			// Create manager using test factory with hooks
+			mgr := NewTestManager(t, &TestManagerOptions{
+				AlertmanagerHook: func(am alertmanager.Alertmanager) {
+					mockAM := am.(*alertmanagermock.MockAlertmanager)
+					// mock set notification config
+					mockAM.On("SetNotificationConfig", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+					mockAM.On("Config").Return(alertmanagerserver.Config{ExternalURL: mustParseURL(t, "http://localhost:8080")})
+					// for saving temp alerts that are triggered via TestNotification
+					if tc.ExpectAlerts > 0 {
+						mockAM.On("TestAlert", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+							triggeredTestAlerts = append(triggeredTestAlerts, args.Get(3).(map[*alertmanagertypes.PostableAlert][]string))
+						}).Return(nil).Times(tc.ExpectAlerts)
+					}
+				},
+				SqlStoreHook: func(store sqlstore.SQLStore) {
+					mockStore := store.(*sqlstoretest.Provider)
+					// Mock the organizations query that SendAlerts makes
+					// Bun generates: SELECT id FROM organizations LIMIT 1 (or SELECT "id" FROM "organizations" LIMIT 1)
+					orgRows := mockStore.Mock().NewRows([]string{"id"}).AddRow(orgID.StringValue())
+					// Match bun's generated query pattern - bun may quote identifiers
+					mockStore.Mock().ExpectQuery("SELECT (.+) FROM (.+)organizations(.+) LIMIT (.+)").WillReturnRows(orgRows)
+				},
+				TelemetryStoreHook: func(store telemetrystore.TelemetryStore) {
+					mockStore := store.(*telemetrystoretest.Provider)
+					// Set up mock data for telemetry store
+					cols := make([]cmock.ColumnType, 0)
+					cols = append(cols, cmock.ColumnType{Name: "value", Type: "Float64"})
+					cols = append(cols, cmock.ColumnType{Name: "attr", Type: "String"})
+					cols = append(cols, cmock.ColumnType{Name: "ts", Type: "DateTime"})
+
+					alertDataRows := cmock.NewRows(cols, tc.Values)
+
+					mock := mockStore.Mock()
+					// Mock metadata queries for FetchTemporalityAndTypeMulti
+					// First query: fetchMetricsTemporalityAndType (from signoz_metrics time series table)
+					metadataCols := []cmock.ColumnType{
+						{Name: "metric_name", Type: "String"},
+						{Name: "temporality", Type: "String"},
+						{Name: "type", Type: "String"},
+						{Name: "is_monotonic", Type: "Bool"},
+					}
+					metadataRows := cmock.NewRows(metadataCols, [][]any{
+						{"probe_success", metrictypes.Unspecified, metrictypes.GaugeType, false},
+					})
+					mock.ExpectQuery("*distributed_time_series_v4*").WithArgs(nil, nil, nil).WillReturnRows(metadataRows)
+					// Second query: fetchMeterSourceMetricsTemporalityAndType (from signoz_meter table)
+					emptyMetadataRows := cmock.NewRows(metadataCols, [][]any{})
+					mock.ExpectQuery("*meter*").WithArgs(nil).WillReturnRows(emptyMetadataRows)
+
+					// Generate query arguments for the metric query
+					evalTime := time.Now().UTC()
+					evalWindow := 5 * time.Minute
+					evalDelay := time.Duration(0)
+					queryArgs := GenerateMetricQueryCHArgs(
+						evalTime,
+						evalWindow,
+						evalDelay,
+						"probe_success",
+						metrictypes.Unspecified,
+					)
+
+					mock.ExpectQuery("*WITH __temporal_aggregation_cte*").
+						WithArgs(queryArgs...).
+						WillReturnRows(alertDataRows)
+				},
+			})
+
+			count, err := mgr.TestNotification(context.Background(), orgID, string(ruleBytes))
+			require.Nil(t, err)
+			assert.Equal(t, tc.ExpectAlerts, count)
+
+			if tc.ExpectAlerts > 0 {
+				// check if the alert has been triggered
+				require.Len(t, triggeredTestAlerts, 1)
+				var gotAlerts []*alertmanagertypes.PostableAlert
+				for a := range triggeredTestAlerts[0] {
+					gotAlerts = append(gotAlerts, a)
+				}
+				require.Len(t, gotAlerts, tc.ExpectAlerts)
+				// check if the alert has triggered with correct threshold value
+				if tc.ExpectValue != 0 {
+					assert.Equal(t, strconv.FormatFloat(tc.ExpectValue, 'f', -1, 64), gotAlerts[0].Annotations["value"])
+				}
+			} else {
+				// check if no alerts have been triggered
+				assert.Empty(t, triggeredTestAlerts)
+			}
+		})
+	}
+}
+
+func TestManager_TestNotification_SendUnmatched_PromRule(t *testing.T) {
+	target := 10.0
+
+	for _, tc := range TcTestNotificationSendUnmatchedPromRule {
+		t.Run(tc.Name, func(t *testing.T) {
+			// Capture base time once per test case to ensure consistent timestamps
+			baseTime := time.Now().UTC()
+
+			rule := BuildPromAtLeastOnceValueAbove(target, nil)
+
+			// Marshal rule to JSON as TestNotification expects
+			ruleBytes, err := json.Marshal(rule)
+			require.NoError(t, err)
+
+			orgID := valuer.GenerateUUID()
+
+			// for saving temp alerts that are triggered via TestNotification
+			triggeredTestAlerts := []map[*alertmanagertypes.PostableAlert][]string{}
+
+			// Variable to store promProvider for cleanup
+			var promProvider prometheus.Prometheus
+
+			// Create manager using test factory with hooks
+			mgr := NewTestManager(t, &TestManagerOptions{
+				AlertmanagerHook: func(am alertmanager.Alertmanager) {
+					mockAM := am.(*alertmanagermock.MockAlertmanager)
+					// mock set notification config
+					mockAM.On("SetNotificationConfig", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+					mockAM.On("Config").Return(alertmanagerserver.Config{ExternalURL: mustParseURL(t, "http://localhost:8080")})
+					// for saving temp alerts that are triggered via TestNotification
+					if tc.ExpectAlerts > 0 {
+						mockAM.On("TestAlert", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+							triggeredTestAlerts = append(triggeredTestAlerts, args.Get(3).(map[*alertmanagertypes.PostableAlert][]string))
+						}).Return(nil).Times(tc.ExpectAlerts)
+					}
+				},
+				SqlStoreHook: func(store sqlstore.SQLStore) {
+					mockStore := store.(*sqlstoretest.Provider)
+					// Mock the organizations query that SendAlerts makes
+					orgRows := mockStore.Mock().NewRows([]string{"id"}).AddRow(orgID.StringValue())
+					mockStore.Mock().ExpectQuery("SELECT (.+) FROM (.+)organizations(.+) LIMIT (.+)").WillReturnRows(orgRows)
+				},
+				TelemetryStoreHook: func(store telemetrystore.TelemetryStore) {
+					mockStore := store.(*telemetrystoretest.Provider)
+
+					// Grid the TestNotification eval computes over (see
+					// Timestamps on base_rule); nil args match any window.
+					evalTime := baseTime
+					evalWindowMs := int64(5 * 60 * 1000) // 5 minutes in ms
+					gridEnd := (evalTime.UnixMilli() / 60000) * 60000
+					gridStart := gridEnd - evalWindowMs
+
+					tsList := make([]int64, 0, len(tc.Values))
+					vList := make([]float64, 0, len(tc.Values))
+					for _, v := range tc.Values {
+						// Skip NaN and Inf values in the samples data
+						if math.IsNaN(v.Value) || math.IsInf(v.Value, 0) {
+							continue
+						}
+						tsList = append(tsList, baseTime.Add(v.Offset).UnixMilli())
+						vList = append(vList, v.Value)
+					}
+					grid := prometheustest.LastSampleGrid(tsList, vList, gridStart, gridEnd, 60_000, 300_000)
+
+					mock := mockStore.Mock()
+					mock.ExpectQuery("SELECT gkey").
+						WithArgs("test_metric", nil, nil, "test_metric", nil, nil).
+						WillReturnRows(cmock.NewRows(prometheustest.GridCols, [][]any{{`[["__name__","test_metric"]]`, grid}}))
+
+					// Create Prometheus provider for this test
+					promProvider = prometheustest.New(context.Background(), instrumentationtest.New().ToProviderSettings(), prometheus.Config{Timeout: 2 * time.Minute}, store)
+				},
+				ManagerOptionsHook: func(opts *ManagerOptions) {
+					// Set Prometheus provider for PromQL queries
+					if promProvider != nil {
+						opts.Prometheus = promProvider
+					}
+				},
+			})
+
+			count, err := mgr.TestNotification(context.Background(), orgID, string(ruleBytes))
+			require.Nil(t, err)
+			assert.Equal(t, tc.ExpectAlerts, count)
+
+			if tc.ExpectAlerts > 0 {
+				// check if the alert has been triggered
+				require.Len(t, triggeredTestAlerts, 1)
+				var gotAlerts []*alertmanagertypes.PostableAlert
+				for a := range triggeredTestAlerts[0] {
+					gotAlerts = append(gotAlerts, a)
+				}
+				require.Len(t, gotAlerts, tc.ExpectAlerts)
+				// check if the alert has triggered with correct threshold value
+				if tc.ExpectValue != 0 && !math.IsNaN(tc.ExpectValue) && !math.IsInf(tc.ExpectValue, 0) {
+					assert.Equal(t, strconv.FormatFloat(tc.ExpectValue, 'f', -1, 64), gotAlerts[0].Annotations["value"])
+				}
+			} else {
+				// check if no alerts have been triggered
+				assert.Empty(t, triggeredTestAlerts)
+			}
+
+		})
+	}
+}

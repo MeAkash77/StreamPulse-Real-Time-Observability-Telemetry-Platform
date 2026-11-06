@@ -1,0 +1,289 @@
+package llmpricingruletypes
+
+import (
+	"database/sql/driver"
+	"encoding/json"
+	"path"
+	"time"
+
+	"github.com/SigNoz/signoz/pkg/errors"
+	"github.com/SigNoz/signoz/pkg/query-service/agentConf"
+	"github.com/SigNoz/signoz/pkg/types"
+	"github.com/SigNoz/signoz/pkg/valuer"
+	"github.com/uptrace/bun"
+)
+
+const (
+	LLMCostFeatureType agentConf.AgentFeatureType = "llm_pricing"
+)
+
+var (
+	ErrCodePricingRuleAlreadyExists  = errors.MustNewCode("pricing_rule_already_exists")
+	ErrCodePricingRuleNotFound       = errors.MustNewCode("pricing_rule_not_found")
+	ErrCodePricingRuleInvalidInput   = errors.MustNewCode("pricing_rule_invalid_input")
+	ErrCodeInvalidCollectorConfig    = errors.MustNewCode("invalid_collector_config")
+	ErrCodeBuildPricingProcessorConf = errors.MustNewCode("build_pricing_processor_config")
+)
+
+type LLMPricingRuleUnit struct {
+	valuer.String
+}
+
+var (
+	UnitPerMillionTokens = LLMPricingRuleUnit{valuer.NewString("per_million_tokens")}
+)
+
+type LLMPricingRuleCacheMode struct {
+	valuer.String
+}
+
+var (
+	// LLMPricingRuleCacheModeSubtract: cached tokens are inside input_tokens (OpenAI-style).
+	LLMPricingRuleCacheModeSubtract = LLMPricingRuleCacheMode{valuer.NewString("subtract")}
+	// LLMPricingRuleCacheModeAdditive: cached tokens are reported separately (Anthropic-style).
+	LLMPricingRuleCacheModeAdditive = LLMPricingRuleCacheMode{valuer.NewString("additive")}
+	// LLMPricingRuleCacheModeUnknown: provider behaviour is unknown. buildProcessorConfig
+	// normalizes this to an empty mode in the collector config.
+	LLMPricingRuleCacheModeUnknown = LLMPricingRuleCacheMode{valuer.NewString("unknown")}
+)
+
+// StringSlice is a []string that is stored as a JSON text column.
+// It is compatible with both SQLite and PostgreSQL.
+type StringSlice []string
+
+// LLMRulePricing is the per-rule pricing shape, persisted as a single JSON.
+type LLMRulePricing struct {
+	Input  float64               `json:"input" required:"true"`
+	Output float64               `json:"output" required:"true"`
+	Cache  *LLMPricingCacheCosts `json:"cache,omitempty"`
+}
+
+type LLMPricingCacheCosts struct {
+	Mode  LLMPricingRuleCacheMode `json:"mode" required:"true"`
+	Read  float64                 `json:"read"`
+	Write float64                 `json:"write"`
+}
+
+type LLMPricingRule struct {
+	bun.BaseModel `bun:"table:llm_pricing_rule,alias:llm_pricing_rule" json:"-"`
+
+	types.Identifiable
+	types.TimeAuditable
+	types.UserAuditable
+
+	OrgID        valuer.UUID        `bun:"org_id,type:text,notnull" json:"orgId" required:"true"`
+	SourceID     *valuer.UUID       `bun:"source_id,type:text" json:"sourceId,omitempty"`
+	Model        string             `bun:"model,type:text,notnull" json:"modelName" required:"true"`
+	Provider     string             `bun:"provider,type:text,notnull" json:"provider" required:"true"`
+	ModelPattern StringSlice        `bun:"model_pattern,type:text,notnull" json:"modelPattern" required:"true"`
+	Unit         LLMPricingRuleUnit `bun:"unit,type:text,notnull" json:"unit" required:"true"`
+	Pricing      LLMRulePricing     `bun:"pricing,type:text,notnull" json:"pricing" required:"true"`
+	// IsOverride marks the row as user-pinned. When true, Zeus skips it entirely.
+	IsOverride bool       `bun:"is_override,notnull" json:"isOverride" required:"true"`
+	SyncedAt   *time.Time `bun:"synced_at" json:"syncedAt,omitempty"`
+	Enabled    bool       `bun:"enabled,notnull" json:"enabled" required:"true"`
+}
+
+type GettableLLMPricingRule = LLMPricingRule
+
+type StorableLLMPricingRule = LLMPricingRule
+
+// UpdatableLLMPricingRule is one entry in the bulk upsert batch.
+//
+// IsOverride is a pointer so "not sent" differs from "false". Without it the
+// rule is matched on source_id and overridden rows are skipped. With it the
+// rule is matched on id and the value is stored.
+type UpdatableLLMPricingRule struct {
+	ID           *valuer.UUID       `json:"id,omitempty"`
+	SourceID     *valuer.UUID       `json:"sourceId,omitempty"`
+	Model        string             `json:"modelName" required:"true"`
+	Provider     string             `json:"provider" required:"true"`
+	ModelPattern []string           `json:"modelPattern" required:"true"`
+	Unit         LLMPricingRuleUnit `json:"unit" required:"true"`
+	Pricing      LLMRulePricing     `json:"pricing" required:"true"`
+	IsOverride   *bool              `json:"isOverride,omitempty"`
+	Enabled      bool               `json:"enabled" required:"true"`
+}
+
+type UpdatableLLMPricingRules struct {
+	Rules []*UpdatableLLMPricingRule `json:"rules" required:"true"`
+}
+
+type ListPricingRulesQuery struct {
+	Offset     int    `query:"offset" json:"offset"`
+	Limit      int    `query:"limit"  json:"limit"`
+	Search     string `query:"q" json:"q"`
+	IsOverride *bool  `query:"isOverride" json:"isOverride"`
+}
+
+type GettablePricingRules struct {
+	Items  []*GettableLLMPricingRule `json:"items"  required:"true"`
+	Total  int                       `json:"total"  required:"true"`
+	Offset int                       `json:"offset" required:"true"`
+	Limit  int                       `json:"limit"  required:"true"`
+}
+
+// Models deleted from spans which doesn't have a corresponding pricing entry.
+type UnmappedModel struct {
+	ModelName string `json:"modelName" required:"true"`
+	Provider  string `json:"provider"`
+	SpanCount uint64 `json:"spanCount" required:"true"`
+}
+
+type GettableUnmappedModels struct {
+	Items []*UnmappedModel `json:"items" required:"true"`
+}
+
+func (LLMPricingRuleUnit) Enum() []any {
+	return []any{UnitPerMillionTokens}
+}
+
+func (LLMPricingRuleCacheMode) Enum() []any {
+	return []any{LLMPricingRuleCacheModeSubtract, LLMPricingRuleCacheModeAdditive, LLMPricingRuleCacheModeUnknown}
+}
+
+func (s StringSlice) Value() (driver.Value, error) {
+	if s == nil {
+		return "[]", nil
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		return nil, err
+	}
+	return string(b), nil
+}
+
+func (s *StringSlice) Scan(src any) error {
+	var raw []byte
+	switch v := src.(type) {
+	case string:
+		raw = []byte(v)
+	case []byte:
+		raw = v
+	case nil:
+		*s = nil
+		return nil
+	default:
+		return errors.NewInternalf(errors.CodeInternal, "llmpricingruletypes: cannot scan %T into StringSlice", src)
+	}
+	return json.Unmarshal(raw, s)
+}
+
+func (p LLMRulePricing) Value() (driver.Value, error) {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return nil, err
+	}
+	return string(b), nil
+}
+
+func (p *LLMRulePricing) Scan(src any) error {
+	var raw []byte
+	switch v := src.(type) {
+	case string:
+		raw = []byte(v)
+	case []byte:
+		raw = v
+	case nil:
+		*p = LLMRulePricing{}
+		return nil
+	default:
+		return errors.NewInternalf(errors.CodeInternal, "llmpricingruletypes: cannot scan %T into LLMRulePricing", src)
+	}
+	return json.Unmarshal(raw, p)
+}
+
+func NewGettableLLMPricingRulesFromLLMPricingRules(items []*LLMPricingRule, total, offset, limit int) *GettablePricingRules {
+	return &GettablePricingRules{
+		Items:  items,
+		Total:  total,
+		Offset: offset,
+		Limit:  limit,
+	}
+}
+
+func NewGettableUnmappedModels(items []*UnmappedModel) *GettableUnmappedModels {
+	return &GettableUnmappedModels{
+		Items: items,
+	}
+}
+
+func (u *UpdatableLLMPricingRule) UnmarshalJSON(data []byte) error {
+	type Alias UpdatableLLMPricingRule
+
+	var temp Alias
+	if err := json.Unmarshal(data, &temp); err != nil {
+		return err
+	}
+
+	*u = UpdatableLLMPricingRule(temp)
+	return u.Validate()
+}
+
+// Validate mirrors the collector's pattern check: at least one pattern, none
+// empty, all valid path.Match globs.
+func (u *UpdatableLLMPricingRule) Validate() error {
+	if len(u.ModelPattern) == 0 {
+		return errors.Newf(errors.TypeInvalidInput, ErrCodePricingRuleInvalidInput, "model %q: modelPattern must contain at least one pattern", u.Model)
+	}
+	for _, p := range u.ModelPattern {
+		if p == "" {
+			return errors.Newf(errors.TypeInvalidInput, ErrCodePricingRuleInvalidInput, "model %q: modelPattern must not contain an empty pattern", u.Model)
+		}
+		if _, err := path.Match(p, ""); err != nil {
+			return errors.Newf(errors.TypeInvalidInput, ErrCodePricingRuleInvalidInput, "model %q: modelPattern %q is not a valid glob", u.Model, p)
+		}
+	}
+	return nil
+}
+
+func NewLLMPricingRuleFromUpdatable(u *UpdatableLLMPricingRule, orgID valuer.UUID, userEmail string, now time.Time) *LLMPricingRule {
+	id := valuer.GenerateUUID()
+	if u.ID != nil {
+		id = *u.ID
+	}
+
+	isOverride := true
+	if u.IsOverride != nil {
+		isOverride = *u.IsOverride
+	} else if u.SourceID != nil {
+		isOverride = false
+	}
+
+	return &LLMPricingRule{
+		Identifiable:  types.Identifiable{ID: id},
+		TimeAuditable: types.TimeAuditable{CreatedAt: now, UpdatedAt: now},
+		UserAuditable: types.UserAuditable{CreatedBy: userEmail, UpdatedBy: userEmail},
+		OrgID:         orgID,
+		SourceID:      u.SourceID,
+		Model:         u.Model,
+		Provider:      u.Provider,
+		ModelPattern:  StringSlice(u.ModelPattern),
+		Unit:          u.Unit,
+		Pricing:       u.Pricing,
+		IsOverride:    isOverride,
+		SyncedAt:      &now,
+		Enabled:       u.Enabled,
+	}
+}
+
+func ModelMatchesAnyRule(model string, rules []*LLMPricingRule) bool {
+	for _, r := range rules {
+		for _, pattern := range r.ModelPattern {
+			if ok, err := path.Match(pattern, model); err == nil && ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func UnmappedModels(models []*UnmappedModel, rules []*LLMPricingRule) []*UnmappedModel {
+	unmapped := make([]*UnmappedModel, 0, len(models))
+	for _, model := range models {
+		if !ModelMatchesAnyRule(model.ModelName, rules) {
+			unmapped = append(unmapped, model)
+		}
+	}
+	return unmapped
+}

@@ -1,0 +1,48 @@
+/**
+ * This file contains all analytics events for the Metrics Explorer.
+ */
+export enum MetricsExplorerEvents {
+	TabChanged = 'Metrics Explorer: Tab visited',
+	ModalOpened = 'Metrics Explorer: Modal opened',
+	MetricClicked = 'Metrics Explorer: Metric clicked',
+	FilterApplied = 'Metrics Explorer: Filter applied',
+	TreemapViewChanged = 'Metrics Explorer: Treemap view changed',
+	PageNumberChanged = 'Metrics Explorer: Page number changed',
+	PageSizeChanged = 'Metrics Explorer: Page size changed',
+	OrderByApplied = 'Metrics Explorer: Order by applied',
+	MetricMetadataUpdated = 'Metrics Explorer: Metric metadata updated',
+	OpenInExplorerClicked = 'Metrics Explorer: Open in explorer clicked',
+	InspectViewChanged = 'Metrics Explorer: Inspect view changed',
+	InspectQueryChanged = 'Metrics Explorer: Inspect query changed',
+	InspectPointClicked = 'Metrics Explorer: Inspect point clicked',
+	QueryBuilderQueryChanged = 'Metrics Explorer: QueryBuilder query changed',
+	YAxisUnitApplied = 'Metrics Explorer: Y axis unit applied',
+	AddToAlertClicked = 'Metrics Explorer: Add to alert clicked',
+	AddToDashboardClicked = 'Metrics Explorer: Add to dashboard clicked',
+	AddToDashboardSuccessful = 'Metrics Explorer: Add to dashboard successful',
+	SearchApplied = 'Metrics Explorer: Search applied',
+}
+
+export enum MetricsExplorerEventKeys {
+	Tab = 'tab',
+	Modal = 'modal',
+	View = 'view',
+	Interval = 'interval',
+	ViewType = 'viewType',
+	PageNumber = 'pageNumber',
+	PageSize = 'pageSize',
+	ColumnName = 'columnName',
+	Order = 'order',
+	AttributeKey = 'attributeKey',
+	AttributeValue = 'attributeValue',
+	MetricName = 'metricName',
+	InspectView = 'inspectView',
+	TimeAggregationOption = 'timeAggregationOption',
+	TimeAggregationInterval = 'timeAggregationInterval',
+	SpaceAggregationOption = 'spaceAggregationOption',
+	SpaceAggregationLabels = 'spaceAggregationLabels',
+	OneChartPerQueryEnabled = 'oneChartPerQueryEnabled',
+	YAxisUnit = 'yAxisUnit',
+	Filters = 'filters',
+	TimeRange = 'timeRange',
+}

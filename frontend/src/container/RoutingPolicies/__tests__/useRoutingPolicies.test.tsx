@@ -1,0 +1,266 @@
+import { QueryClient, QueryClientProvider, UseQueryResult } from 'react-query';
+import {
+	act,
+	renderHook,
+	RenderHookResult,
+	waitFor,
+} from '@testing-library/react';
+import { GetRoutingPoliciesResponse } from 'api/routingPolicies/getRoutingPolicies';
+import { TestRouter } from 'tests/router';
+import { SuccessResponseV2 } from 'types/api';
+
+import { UseRoutingPoliciesReturn } from '../types';
+import useRoutingPolicies from '../useRoutingPolicies';
+import {
+	convertRoutingPolicyToApiResponse,
+	MOCK_CHANNEL_1,
+	MOCK_CHANNEL_2,
+	MOCK_ROUTING_POLICY_1,
+	MOCK_ROUTING_POLICY_2,
+} from './testUtils';
+
+const mockNavigate = jest.fn();
+jest.mock('lib/router/navigation', () => ({
+	...jest.requireActual('lib/router/navigation'),
+	navigate: (...args: unknown[]): void => mockNavigate(...args),
+}));
+
+const mockDebouncedFn = jest.fn((fn: () => void) => fn);
+jest.mock('hooks/useDebouncedFunction', () => ({
+	__esModule: true,
+	default: (fn: () => void): (() => void) => mockDebouncedFn(fn),
+}));
+
+const mockRefetchRoutingPolicies = jest.fn();
+const mockCreateRoutingPolicy = jest.fn();
+const mockUpdateRoutingPolicy = jest.fn();
+const mockDeleteRoutingPolicy = jest.fn();
+jest.mock('hooks/routingPolicies/useGetRoutingPolicies', () => ({
+	useGetRoutingPolicies: (): UseQueryResult<
+		SuccessResponseV2<GetRoutingPoliciesResponse>,
+		Error
+	> =>
+		({
+			data: {
+				data: {
+					data: [
+						convertRoutingPolicyToApiResponse(MOCK_ROUTING_POLICY_1),
+						convertRoutingPolicyToApiResponse(MOCK_ROUTING_POLICY_2),
+					],
+				},
+			},
+			refetch: mockRefetchRoutingPolicies,
+			isFetching: false,
+			isLoading: false,
+			isError: false,
+		}) as any,
+}));
+jest.mock('hooks/routingPolicies/useCreateRoutingPolicy', () => ({
+	useCreateRoutingPolicy: (): any => ({
+		mutate: mockCreateRoutingPolicy,
+		isLoading: false,
+	}),
+}));
+jest.mock('hooks/routingPolicies/useUpdateRoutingPolicy', () => ({
+	useUpdateRoutingPolicy: (): any => ({
+		mutate: mockUpdateRoutingPolicy,
+		isLoading: false,
+	}),
+}));
+jest.mock('hooks/routingPolicies/useDeleteRoutingPolicy', () => ({
+	useDeleteRoutingPolicy: (): any => ({
+		mutate: mockDeleteRoutingPolicy,
+		isLoading: false,
+	}),
+}));
+jest.mock('hooks/notificationChannels/useChannelOptions', () => ({
+	__esModule: true,
+	useChannelOptions: (): any => ({
+		data: [MOCK_CHANNEL_1, MOCK_CHANNEL_2],
+		isLoading: false,
+		isError: false,
+		refetch: jest.fn(),
+	}),
+}));
+
+const ROUTING_POLICY_1_NAME = 'Routing Policy 1';
+const TEST_SEARCH_TERM = 'test search';
+
+describe('useRoutingPolicies', () => {
+	let queryClient: QueryClient;
+
+	const renderHookWithWrapper = (
+		initialRoute = '/alerts',
+	): RenderHookResult<UseRoutingPoliciesReturn, unknown> => {
+		const wrapper = ({
+			children,
+		}: {
+			children: React.ReactNode;
+		}): React.ReactElement => (
+			<QueryClientProvider client={queryClient}>
+				<TestRouter initialRoute={initialRoute}>{children}</TestRouter>
+			</QueryClientProvider>
+		);
+
+		return renderHook(() => useRoutingPolicies(), { wrapper });
+	};
+
+	beforeEach(() => {
+		jest.clearAllMocks();
+		queryClient = new QueryClient({
+			defaultOptions: {
+				queries: {
+					retry: false,
+				},
+			},
+		});
+	});
+
+	it('should return all policies when search term is empty', () => {
+		const { result } = renderHookWithWrapper();
+
+		expect(result.current.searchTerm).toBe('');
+		expect(result.current.routingPoliciesData).toHaveLength(2);
+		expect(result.current.routingPoliciesData).toStrictEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ name: MOCK_ROUTING_POLICY_1.name }),
+				expect.objectContaining({ name: MOCK_ROUTING_POLICY_2.name }),
+			]),
+		);
+	});
+
+	it('should filter policies exactly matching the search term', () => {
+		const { result } = renderHookWithWrapper();
+
+		act(() => {
+			result.current.setSearchTerm(MOCK_ROUTING_POLICY_1.name);
+		});
+
+		expect(result.current.searchTerm).toBe(MOCK_ROUTING_POLICY_1.name);
+		expect(result.current.routingPoliciesData).toHaveLength(1);
+		expect(result.current.routingPoliciesData[0].name).toBe(
+			MOCK_ROUTING_POLICY_1.name,
+		);
+	});
+
+	it('should filter policies partially matching the search term', () => {
+		const { result } = renderHookWithWrapper();
+
+		act(() => {
+			result.current.setSearchTerm('Policy 1');
+		});
+
+		expect(result.current.searchTerm).toBe('Policy 1');
+		expect(result.current.routingPoliciesData).toHaveLength(1);
+		expect(result.current.routingPoliciesData[0].name).toBe(
+			MOCK_ROUTING_POLICY_1.name,
+		);
+	});
+
+	it('should return empty array when no policies match the search term', () => {
+		const { result } = renderHookWithWrapper();
+
+		act(() => {
+			result.current.setSearchTerm('random search term');
+		});
+
+		expect(result.current.searchTerm).toBe('random search term');
+		expect(result.current.routingPoliciesData).toHaveLength(0);
+	});
+
+	it('should initialize search term from URL query parameter', () => {
+		const { result } = renderHookWithWrapper(
+			`/alerts?search=${encodeURIComponent(ROUTING_POLICY_1_NAME)}`,
+		);
+
+		expect(result.current.searchTerm).toBe(ROUTING_POLICY_1_NAME);
+		expect(result.current.routingPoliciesData).toHaveLength(1);
+		expect(result.current.routingPoliciesData[0].name).toBe(
+			ROUTING_POLICY_1_NAME,
+		);
+	});
+
+	it('should initialize with empty search when no search param in URL', () => {
+		const { result } = renderHookWithWrapper('/alerts');
+
+		expect(result.current.searchTerm).toBe('');
+		expect(result.current.routingPoliciesData).toHaveLength(2);
+	});
+
+	it('should update URL when search term is set', async () => {
+		const { result } = renderHookWithWrapper();
+
+		act(() => {
+			result.current.setSearchTerm(TEST_SEARCH_TERM);
+		});
+
+		await waitFor(() => {
+			expect(mockNavigate).toHaveBeenCalled();
+		});
+
+		const callArg = mockNavigate.mock.calls[0][0];
+		expect(callArg).toContain('search=test+search');
+	});
+
+	it('should preserve existing query parameters such as sort and pagination when updating search (Bug 54)', async () => {
+		const { result } = renderHookWithWrapper(
+			'/alerts?tab=Configuration&subTab=routing-policies',
+		);
+		// nuqs writes sort and pagination to the URL before the router location catches up
+		window.history.replaceState(
+			null,
+			'',
+			'/alerts?tab=Configuration&subTab=routing-policies&orderBy=name&order=asc&page=2&limit=20',
+		);
+
+		try {
+			act(() => {
+				result.current.setSearchTerm('policy');
+			});
+
+			await waitFor(() => {
+				expect(mockNavigate).toHaveBeenCalled();
+			});
+		} finally {
+			window.history.replaceState(null, '', '/');
+		}
+
+		const callArg = mockNavigate.mock.calls[0][0];
+		expect(callArg).toContain('tab=Configuration');
+		expect(callArg).toContain('subTab=routing-policies');
+		expect(callArg).toContain('orderBy=name');
+		expect(callArg).toContain('order=asc');
+		expect(callArg).toContain('page=2');
+		expect(callArg).toContain('limit=20');
+		expect(callArg).toContain('search=policy');
+	});
+
+	it('should remove search param from URL when search is cleared', async () => {
+		const { result } = renderHookWithWrapper('/alerts?search=existing');
+
+		act(() => {
+			result.current.setSearchTerm('');
+		});
+
+		await waitFor(() => {
+			expect(mockNavigate).toHaveBeenCalled();
+		});
+
+		const callArg = mockNavigate.mock.calls[0][0];
+		expect(callArg).toBe('/alerts?');
+	});
+
+	it('should filter policies by description', () => {
+		const { result } = renderHookWithWrapper();
+
+		act(() => {
+			result.current.setSearchTerm(MOCK_ROUTING_POLICY_1.description || '');
+		});
+
+		expect(result.current.searchTerm).toBe(MOCK_ROUTING_POLICY_1.description);
+		expect(result.current.routingPoliciesData).toHaveLength(1);
+		expect(result.current.routingPoliciesData[0].description).toBe(
+			MOCK_ROUTING_POLICY_1.description,
+		);
+	});
+});

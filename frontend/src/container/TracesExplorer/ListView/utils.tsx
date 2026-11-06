@@ -1,0 +1,201 @@
+import { AppLink } from 'lib/router/AppLink';
+import { buildRoutePath } from 'lib/router/buildRoutePath';
+import type { TableColumnsType as ColumnsType } from 'antd';
+import { Badge } from '@signozhq/ui/badge';
+import { Typography } from '@signozhq/ui/typography';
+import { TelemetryFieldKey } from 'api/v5/v5';
+import type { TracesTableRow } from 'container/TracesExplorer/TracesTable/getFieldColumn';
+import { DATE_TIME_FORMATS } from 'constants/dateTimeFormats';
+import ROUTES from 'constants/routes';
+import { buildCompositeKey } from 'container/OptionsMenu/utils';
+import { getMs } from 'utils/timeUtils';
+import { formUrlParams } from 'utils/traceUtils';
+import { TimestampInput } from 'hooks/useTimezoneFormatter/useTimezoneFormatter';
+import { RowData } from 'lib/query/createTableColumnsFromQuery';
+import LineClampedText from 'periscope/components/LineClampedText/LineClampedText';
+import { ILog } from 'types/api/logs/log';
+import { Query } from 'types/api/queryBuilder/queryBuilderData';
+import { QueryDataV3 } from 'types/api/widgets/getQuery';
+
+export function BlockLink({
+	children,
+	to,
+	openInNewTab,
+}: {
+	children: React.ReactNode;
+	to: string;
+	openInNewTab: boolean;
+}): any {
+	// Display block to make the whole cell clickable
+	return (
+		<AppLink
+			to={to}
+			style={{ display: 'block' }}
+			target={openInNewTab ? '_blank' : '_self'}
+		>
+			{children}
+		</AppLink>
+	);
+}
+
+export const transformDataWithDate = (
+	data: QueryDataV3[],
+): Omit<ILog, 'timestamp'>[] =>
+	data[0]?.list?.map(({ data, timestamp }) => ({ ...data, date: timestamp })) ||
+	[];
+
+export const getTraceLink = (record: Record<string, unknown>): string => {
+	function readId(value: unknown): string {
+		if (typeof value === 'string' || typeof value === 'number') {
+			return String(value);
+		}
+		return '';
+	}
+
+	const traceId = readId(record.traceID) || readId(record.trace_id);
+	const spanId = readId(record.spanID) || readId(record.span_id);
+
+	if (!traceId) {
+		return '';
+	}
+
+	return `${buildRoutePath(ROUTES.TRACE_DETAIL, { id: traceId })}${formUrlParams(
+		{
+			spanId,
+			levelUp: 0,
+			levelDown: 0,
+		},
+	)}`;
+};
+
+export const getListColumns = (
+	selectedColumns: TelemetryFieldKey[],
+	formatTimezoneAdjustedTimestamp: (
+		input: TimestampInput,
+		format?: string,
+	) => string | number,
+): ColumnsType<RowData> => {
+	const initialColumns: ColumnsType<RowData> = [
+		{
+			dataIndex: 'date',
+			key: 'date',
+			title: 'Timestamp',
+			width: 145,
+			render: (value, item): JSX.Element => {
+				const date =
+					typeof value === 'string'
+						? formatTimezoneAdjustedTimestamp(
+								value,
+								DATE_TIME_FORMATS.ISO_DATETIME_MS,
+							)
+						: formatTimezoneAdjustedTimestamp(
+								value / 1e6,
+								DATE_TIME_FORMATS.ISO_DATETIME_MS,
+							);
+				return (
+					<BlockLink to={getTraceLink(item)} openInNewTab={false}>
+						<Typography.Text>{date}</Typography.Text>
+					</BlockLink>
+				);
+			},
+		},
+	];
+
+	const columns: ColumnsType<RowData> =
+		selectedColumns.map((props) => {
+			const name = props?.name || (props as any)?.key;
+			const fieldContext = props?.fieldContext || (props as any)?.type;
+			return {
+				title: name,
+				dataIndex: name,
+				key: buildCompositeKey(name, fieldContext),
+				width: 145,
+				render: (value, item): JSX.Element => {
+					if (value === '') {
+						return (
+							<BlockLink to={getTraceLink(item)} openInNewTab={false}>
+								<Typography data-testid={name}>N/A</Typography>
+							</BlockLink>
+						);
+					}
+
+					if (
+						name === 'httpMethod' ||
+						name === 'responseStatusCode' ||
+						name === 'response_status_code' ||
+						name === 'http_method'
+					) {
+						return (
+							<BlockLink to={getTraceLink(item)} openInNewTab={false}>
+								<Badge
+									textTransform="none"
+									testId={name}
+									color="highlight-danger"
+									variant="outlined"
+								>
+									{value}
+								</Badge>
+							</BlockLink>
+						);
+					}
+
+					if (name === 'durationNano' || name === 'duration_nano') {
+						return (
+							<BlockLink to={getTraceLink(item)} openInNewTab={false}>
+								<Typography data-testid={name}>{getMs(value)}ms</Typography>
+							</BlockLink>
+						);
+					}
+
+					return (
+						<BlockLink to={getTraceLink(item)} openInNewTab={false}>
+							<Typography data-testid={name}>
+								<LineClampedText text={value} lines={3} />
+							</Typography>
+						</BlockLink>
+					);
+				},
+				responsive: ['md'],
+			};
+		}) || [];
+
+	return [...initialColumns, ...columns];
+};
+
+// Reshapes the query-range list payload into table rows. `id` mirrors span_id so
+// TanStack sees genuine row changes on orderBy toggles instead of falling back to
+// positional ids; `timestamp` is lifted from the wrapping ListItem.
+export const transformSpanRows = (data: QueryDataV3[]): TracesTableRow[] => {
+	const list = data[0]?.list;
+	if (!list) {
+		return [];
+	}
+	return list.map((item) => {
+		const row = item.data as Record<string, unknown>;
+		return {
+			...row,
+			timestamp: item.timestamp,
+			id: row.span_id,
+		};
+	}) as TracesTableRow[];
+};
+
+export const getListLimit = (query: Query): number | null =>
+	query.builder.queryTraceOperator?.[0]?.limit ??
+	query.builder.queryData[0]?.limit ??
+	null;
+
+/** Offset of the next page, or undefined once a short page or the limit ends the list. */
+export const getNextPageOffset = (
+	pageLengths: number[],
+	pageSize: number,
+	limit: number | null,
+): number | undefined => {
+	const loaded = pageLengths.reduce((sum, length) => sum + length, 0);
+	const lastLength = pageLengths[pageLengths.length - 1] ?? 0;
+
+	if (lastLength < pageSize || (limit && loaded >= limit)) {
+		return undefined;
+	}
+	return loaded;
+};

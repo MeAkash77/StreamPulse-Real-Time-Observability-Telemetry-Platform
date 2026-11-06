@@ -1,0 +1,160 @@
+package llmpricingruletypes
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
+)
+
+// assertYAMLEqualToFile decodes both sides into any and compares structurally,
+// so map key ordering is irrelevant.
+func assertYAMLEqualToFile(t *testing.T, name string, actual []byte) {
+	t.Helper()
+	expected, err := os.ReadFile(filepath.Join("testdata", name))
+	require.NoError(t, err)
+
+	var e, a any
+	require.NoError(t, yaml.Unmarshal(expected, &e))
+	require.NoError(t, yaml.Unmarshal(actual, &a))
+	assert.Equal(t, e, a)
+}
+
+func makePricingRule(model string, patterns []string, cacheMode LLMPricingRuleCacheMode, costIn, costOut, cacheRead, cacheWrite float64) *LLMPricingRule {
+	return &LLMPricingRule{
+		Model:        model,
+		ModelPattern: StringSlice(patterns),
+		Unit:         UnitPerMillionTokens,
+		Pricing: LLMRulePricing{
+			Input:  costIn,
+			Output: costOut,
+			Cache: &LLMPricingCacheCosts{
+				Mode:  cacheMode,
+				Read:  cacheRead,
+				Write: cacheWrite,
+			},
+		},
+		Enabled: true,
+	}
+}
+
+func makePricingRuleNoCache(model string, patterns []string, costIn, costOut float64) *LLMPricingRule {
+	return &LLMPricingRule{
+		Model:        model,
+		ModelPattern: StringSlice(patterns),
+		Unit:         UnitPerMillionTokens,
+		Pricing:      LLMRulePricing{Input: costIn, Output: costOut},
+		Enabled:      true,
+	}
+}
+
+func TestGenerateCollectorConfigWithLLMPricingProcessor(t *testing.T) {
+	tests := []struct {
+		name         string
+		rules        []*LLMPricingRule
+		expectedFile string
+	}{
+		{
+			name: "with_rule",
+			rules: []*LLMPricingRule{
+				makePricingRule("gpt-4o", []string{"gpt-4o*"}, LLMPricingRuleCacheModeSubtract, 5.0, 15.0, 2.5, 0),
+			},
+			expectedFile: "collector_with_rule.yaml",
+		},
+		// We deploy the processor even with zero rules so rules can be added
+		// later (by a user or by Zeus) without any config-shape change.
+		// Pipeline wiring is handled by the collector's baseline config.
+		{
+			name:         "no_rules",
+			rules:        nil,
+			expectedFile: "collector_no_rules.yaml",
+		},
+		// A rule without cache pricing omits the cache block entirely so the
+		// collector does not apply any cache cost.
+		{
+			name: "rule_without_cache",
+			rules: []*LLMPricingRule{
+				makePricingRuleNoCache("gpt-4o", []string{"gpt-4o*"}, 5.0, 15.0),
+			},
+			expectedFile: "collector_rule_without_cache.yaml",
+		},
+		// An unknown cache mode still emits the cache block (with prices) but omits
+		// the mode field; the collector handles a missing mode in its default branch.
+		{
+			name: "rule_cache_mode_unknown",
+			rules: []*LLMPricingRule{
+				makePricingRule("gpt-4o", []string{"gpt-4o*"}, LLMPricingRuleCacheModeUnknown, 5.0, 15.0, 2.5, 0),
+			},
+			expectedFile: "collector_rule_cache_mode_unknown.yaml",
+		},
+		// Negative in/out drops the rule; a negative cache price drops only the cache block.
+		{
+			name: "negative_prices",
+			rules: []*LLMPricingRule{
+				makePricingRule("openrouter/auto", []string{"openrouter/auto", "auto"}, LLMPricingRuleCacheModeSubtract, -1, -1, -1, -1),
+				makePricingRule("gpt-4o", []string{"gpt-4o*"}, LLMPricingRuleCacheModeSubtract, 5.0, 15.0, -1, 0),
+			},
+			expectedFile: "collector_rule_without_cache.yaml",
+		},
+	}
+
+	input, err := os.ReadFile(filepath.Join("testdata", "collector_baseline.yaml"))
+	require.NoError(t, err)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := GenerateCollectorConfigWithLLMPricingProcessor(input, tc.rules)
+			require.NoError(t, err)
+			assertYAMLEqualToFile(t, tc.expectedFile, out)
+		})
+	}
+}
+
+func TestGenerateCollectorConfig_EmptyInputPassthrough(t *testing.T) {
+	// yaml.v3 errors on empty/whitespace input; the generator passes such
+	// input through unchanged instead.
+	rules := []*LLMPricingRule{
+		makePricingRule("gpt-4o", []string{"gpt-4o*"}, LLMPricingRuleCacheModeSubtract, 5.0, 15.0, 2.5, 0),
+	}
+
+	for _, in := range [][]byte{nil, []byte("   \n")} {
+		out, err := GenerateCollectorConfigWithLLMPricingProcessor(in, rules)
+		require.NoError(t, err)
+		assert.Equal(t, in, out)
+	}
+}
+
+func TestUpdatableLLMPricingRuleUnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		wantErr bool
+	}{
+		{name: "valid", pattern: `["gpt-4o*", "gpt-4o"]`},
+		{name: "missing", pattern: ``, wantErr: true},
+		{name: "null", pattern: `null`, wantErr: true},
+		{name: "empty_list", pattern: `[]`, wantErr: true},
+		{name: "empty_entry", pattern: `["gpt-4o*", ""]`, wantErr: true},
+		{name: "bad_glob", pattern: `["gpt-["]`, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"modelName": "gpt-4o"}`
+			if tc.pattern != "" {
+				body = `{"modelName": "gpt-4o", "modelPattern": ` + tc.pattern + `}`
+			}
+			var req UpdatableLLMPricingRules
+			err := json.Unmarshal([]byte(`{"rules": [`+body+`]}`), &req)
+			if tc.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}

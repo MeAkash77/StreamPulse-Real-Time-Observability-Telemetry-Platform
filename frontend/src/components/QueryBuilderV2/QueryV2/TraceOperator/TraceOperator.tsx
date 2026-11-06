@@ -1,0 +1,125 @@
+import { useCallback } from 'react';
+import { Button, Tooltip } from 'antd';
+import { Typography } from '@signozhq/ui/typography';
+import cx from 'classnames';
+import { useQueryBuilder } from 'hooks/queryBuilder/useQueryBuilder';
+import { useQueryOperations } from 'hooks/queryBuilder/useQueryBuilderOperations';
+import { Trash2 } from '@signozhq/icons';
+import {
+	IBuilderQuery,
+	IBuilderTraceOperator,
+} from 'types/api/queryBuilder/queryBuilderData';
+import { DataSource } from 'types/common/queryBuilder';
+
+import { QueryBuilderFieldsConfig } from '../../queryBuilderFields.types';
+import QueryAddOns from '../QueryAddOns/QueryAddOns';
+import QueryAggregation from '../QueryAggregation/QueryAggregation';
+import TraceOperatorEditor from './TraceOperatorEditor';
+
+import './TraceOperator.styles.scss';
+
+export default function TraceOperator({
+	traceOperator,
+	isRawQuery = false,
+	fieldsConfig,
+}: {
+	traceOperator: IBuilderTraceOperator;
+	isRawQuery?: boolean;
+	fieldsConfig?: QueryBuilderFieldsConfig;
+}): JSX.Element {
+	const { panelType, removeTraceOperator } = useQueryBuilder();
+	const { handleChangeQueryData } = useQueryOperations({
+		index: 0,
+		query: traceOperator,
+		entityVersion: '',
+		isForTraceOperator: true,
+	});
+
+	const handleTraceOperatorChange = useCallback(
+		(traceOperatorExpression: string) => {
+			handleChangeQueryData('expression', traceOperatorExpression);
+		},
+		[handleChangeQueryData],
+	);
+
+	const handleChangeAggregateEvery = useCallback(
+		(value: IBuilderQuery['stepInterval']) => {
+			handleChangeQueryData('stepInterval', value);
+		},
+		[handleChangeQueryData],
+	);
+
+	const handleChangeAggregation = useCallback(
+		(value: string) => {
+			handleChangeQueryData('aggregations', [
+				{
+					expression: value,
+				},
+			]);
+		},
+		[handleChangeQueryData],
+	);
+
+	return (
+		<div
+			className={cx('qb-trace-operator', !isRawQuery && 'non-list-view')}
+			data-testid="trace-operator"
+		>
+			<div className="qb-trace-operator-container">
+				<div
+					className={cx(
+						'qb-trace-operator-label-with-input',
+						!isRawQuery && 'qb-trace-operator-arrow',
+					)}
+				>
+					<Typography.Text className="label">Trace Operator</Typography.Text>
+					<div className="qb-trace-operator-editor-container">
+						<TraceOperatorEditor
+							value={traceOperator?.expression || ''}
+							traceOperator={traceOperator}
+							onChange={handleTraceOperatorChange}
+						/>
+					</div>
+				</div>
+
+				{!isRawQuery && (
+					<div className="qb-trace-operator-aggregation-container">
+						<div className={cx(!isRawQuery && 'qb-trace-operator-arrow')}>
+							<QueryAggregation
+								dataSource={DataSource.TRACES}
+								key={`query-search-${traceOperator.queryName}`}
+								panelType={panelType || undefined}
+								onAggregationIntervalChange={handleChangeAggregateEvery}
+								onChange={handleChangeAggregation}
+								queryData={traceOperator}
+								fieldsConfig={fieldsConfig}
+							/>
+						</div>
+						<div
+							className={cx(
+								'qb-trace-operator-add-ons-container',
+								!isRawQuery && 'qb-trace-operator-arrow',
+							)}
+						>
+							<QueryAddOns
+								index={0}
+								query={traceOperator}
+								version="v3"
+								isForTraceOperator
+								isRawQuery={false}
+								showReduceTo={false}
+								panelType={panelType}
+								fieldsConfig={fieldsConfig}
+							/>
+						</div>
+					</div>
+				)}
+			</div>
+			<Tooltip title="Remove Trace Operator" placement="topLeft">
+				<Button className="periscope-btn ghost" onClick={removeTraceOperator}>
+					<Trash2 size={14} />
+				</Button>
+			</Tooltip>
+		</div>
+	);
+}

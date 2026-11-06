@@ -1,0 +1,450 @@
+import { ReactNode, Suspense, useCallback, useEffect, useState } from 'react';
+import { Route, Router, Switch } from 'react-router-dom';
+import { CompatRouter } from 'react-router-dom-v5-compat';
+import * as Sentry from '@sentry/react';
+import getLocalStorageApi from 'api/browser/localstorage/get';
+import setLocalStorageApi from 'api/browser/localstorage/set';
+import logEvent from 'api/common/logEvent';
+import AppPageProviders from 'app/AppPageProviders';
+import AppShell from 'app/AppShell';
+import AppLoading from 'components/AppLoading/AppLoading';
+import { CmdKPalette } from 'components/cmdKPalette/cmdKPalette';
+import NotFound from 'components/NotFound';
+import { ShiftHoldOverlayController } from 'components/ShiftOverlay/ShiftHoldOverlayController';
+import Spinner from 'components/Spinner';
+import { LOCALSTORAGE } from 'constants/localStorage';
+import ROUTES from 'constants/routes';
+import AppLayout from 'container/AppLayout';
+import Hex from 'crypto-js/enc-hex';
+import HmacSHA256 from 'crypto-js/hmac-sha256';
+import { useIsAIAssistantEnabled } from 'hooks/useIsAIAssistantEnabled';
+import { ChatSupportState, useChatSupport } from 'hooks/useChatSupport';
+import { useIsDarkMode } from 'hooks/useDarkMode';
+import { useGetTenantLicense } from 'hooks/useGetTenantLicense';
+import { StatusCodes } from 'http-status-codes';
+import { IS_PROD } from 'lib/env';
+import history from 'lib/history';
+import ErrorBoundaryFallback from 'pages/ErrorBoundaryFallback/ErrorBoundaryFallback';
+import posthog from 'posthog-js';
+import { useAppContext } from 'providers/App/App';
+import { IUser } from 'providers/App/types';
+import { LicenseStatus } from 'types/api/licensesV3/getActive';
+import { extractDomain } from 'utils/app';
+
+import { Home } from './pageComponents';
+import PrivateRoute from './Private';
+import defaultRoutes, {
+	AppRoutes,
+	LIST_LICENSES,
+	SUPPORT_ROUTE,
+} from './routes';
+import {
+	hasNoAppFrames,
+	isExternalIntegrationError,
+	SENTRY_IGNORE_ERRORS,
+} from './sentryFilters';
+
+const appRouter = (children: ReactNode): ReactNode => (
+	<Router history={history}>
+		<CompatRouter>{children}</CompatRouter>
+	</Router>
+);
+
+const appLayout = (children: ReactNode): ReactNode => (
+	<AppLayout>{children}</AppLayout>
+);
+
+function App(): JSX.Element {
+	const {
+		user,
+		isFetchingUser,
+		isFetchingFeatureFlags,
+		trialInfo,
+		activeLicense,
+		isFetchingActiveLicense,
+		activeLicenseFetchError,
+		userFetchError,
+		isLoggedIn: isLoggedInState,
+		featureFlags,
+		org,
+		isPreflightLoading,
+	} = useAppContext();
+	const [routes, setRoutes] = useState<AppRoutes[]>(defaultRoutes);
+	const isAIAssistantEnabled = useIsAIAssistantEnabled();
+	const chatSupport = useChatSupport();
+
+	const { hostname } = window.location;
+	const [pathname, setPathname] = useState(history.location.pathname);
+
+	const { isCloudUser, isEnterpriseSelfHostedUser } = useGetTenantLicense();
+
+	const [isSentryInitialized, setIsSentryInitialized] = useState(false);
+
+	useEffect(() => {
+		return history.listen((location) => {
+			setPathname(location.pathname);
+		});
+	}, []);
+
+	const enableAnalytics = useCallback(
+		(user: IUser): void => {
+			// wait for the required data to be loaded before doing init for anything!
+			if (!isFetchingActiveLicense && activeLicense && org) {
+				const orgName =
+					org && Array.isArray(org) && org.length > 0 ? org[0].displayName : '';
+
+				const { displayName, email, role, id, orgId } = user;
+
+				const domain = extractDomain(email);
+				const hostNameParts = hostname.split('.');
+
+				const identifyPayload = {
+					email,
+					name: displayName,
+					company_name: orgName,
+					deployment_name: hostNameParts[0],
+					data_region: hostNameParts[1],
+					deployment_url: hostname,
+					company_domain: domain,
+					source: 'signoz-ui',
+					role,
+				};
+
+				const groupTraits = {
+					name: orgName,
+					deployment_name: hostNameParts[0],
+					data_region: hostNameParts[1],
+					deployment_url: hostname,
+					company_domain: domain,
+					source: 'signoz-ui',
+				};
+
+				if (email) {
+					logEvent('Email Identified', identifyPayload, 'identify');
+				}
+
+				if (domain) {
+					logEvent('Domain Identified', groupTraits, 'group');
+				}
+				if (window && window.Appcues) {
+					window.Appcues.identify(id, {
+						name: displayName,
+						deployment_name: hostNameParts[0],
+						data_region: hostNameParts[1],
+						deployment_url: hostname,
+						company_domain: domain,
+						companyName: orgName,
+						email,
+						paidUser: !!trialInfo?.trialConvertedToSubscription,
+					});
+				}
+
+				posthog?.identify(id, {
+					email,
+					name: displayName,
+					orgName,
+					deployment_name: hostNameParts[0],
+					data_region: hostNameParts[1],
+					deployment_url: hostname,
+					company_domain: domain,
+					source: 'signoz-ui',
+					isPaidUser: !!trialInfo?.trialConvertedToSubscription,
+				});
+
+				posthog?.group('company', orgId, {
+					name: orgName,
+					deployment_name: hostNameParts[0],
+					data_region: hostNameParts[1],
+					deployment_url: hostname,
+					company_domain: domain,
+					source: 'signoz-ui',
+					isPaidUser: !!trialInfo?.trialConvertedToSubscription,
+				});
+			}
+		},
+		[
+			hostname,
+			isFetchingActiveLicense,
+			activeLicense,
+			org,
+			trialInfo?.trialConvertedToSubscription,
+		],
+	);
+
+	// eslint-disable-next-line sonarjs/cognitive-complexity
+	useEffect(() => {
+		if (
+			!isFetchingActiveLicense &&
+			(activeLicense || activeLicenseFetchError) &&
+			!isFetchingUser &&
+			user &&
+			!!user.email
+		) {
+			// either the active API returns error with 404 or 501 and if it returns a terminated license means it's on basic plan
+			const isOnBasicPlan =
+				(activeLicenseFetchError &&
+					[StatusCodes.NOT_FOUND, StatusCodes.NOT_IMPLEMENTED].includes(
+						activeLicenseFetchError?.getHttpStatusCode(),
+					)) ||
+				(activeLicense?.status && activeLicense.status === LicenseStatus.INVALID);
+			const isIdentifiedUser = getLocalStorageApi(LOCALSTORAGE.IS_IDENTIFIED_USER);
+
+			if (isLoggedInState && user && user.id && user.email && !isIdentifiedUser) {
+				setLocalStorageApi(LOCALSTORAGE.IS_IDENTIFIED_USER, 'true');
+			}
+
+			let updatedRoutes = defaultRoutes;
+			// if the user is a cloud user
+			if (isCloudUser || isEnterpriseSelfHostedUser) {
+				// if the user is on basic plan then remove billing
+				if (isOnBasicPlan) {
+					updatedRoutes = updatedRoutes.filter(
+						(route) =>
+							route?.path !== ROUTES.BILLING && route?.path !== ROUTES.INTEGRATIONS,
+					);
+				}
+
+				if (isEnterpriseSelfHostedUser) {
+					updatedRoutes.push(LIST_LICENSES);
+				}
+
+				// always add support route for cloud users
+				updatedRoutes = [...updatedRoutes, SUPPORT_ROUTE];
+			} else {
+				// if not a cloud user then remove billing and add list licenses route
+				updatedRoutes = updatedRoutes.filter(
+					(route) =>
+						route?.path !== ROUTES.BILLING && route?.path !== ROUTES.INTEGRATIONS,
+				);
+				updatedRoutes = [...updatedRoutes, LIST_LICENSES];
+			}
+			setRoutes(updatedRoutes);
+		}
+	}, [
+		isLoggedInState,
+		user,
+		isCloudUser,
+		isEnterpriseSelfHostedUser,
+		isFetchingActiveLicense,
+		isFetchingUser,
+		activeLicense,
+		activeLicenseFetchError,
+	]);
+
+	useEffect(() => {
+		if (!isLoggedInState) {
+			return;
+		}
+
+		setRoutes((prev) => {
+			const hasAi = prev.some((r) => r.key === 'AI_ASSISTANT');
+			if (isAIAssistantEnabled === hasAi) {
+				return prev;
+			}
+			if (isAIAssistantEnabled) {
+				const aiRoute = defaultRoutes.find((r) => r.key === 'AI_ASSISTANT');
+				if (!aiRoute) {
+					return prev;
+				}
+				return [...prev.filter((r) => r.key !== 'AI_ASSISTANT'), aiRoute];
+			}
+			return prev.filter((r) => r.key !== 'AI_ASSISTANT');
+		});
+	}, [isLoggedInState, isAIAssistantEnabled]);
+
+	const isDarkMode = useIsDarkMode();
+
+	useEffect(() => {
+		window.Pylon?.('setTheme', isDarkMode ? 'dark' : 'light');
+	}, [isDarkMode]);
+
+	useEffect(() => {
+		// The bottom strip carries Support, so the floating bubble goes entirely.
+		window.Pylon?.('hideChatBubble');
+	}, [pathname]);
+
+	// Identity for the Pylon widget. Whether this user gets Pylon at all is
+	// `useChatSupport`'s call — this only fills in who they are.
+	useEffect(() => {
+		if (chatSupport !== ChatSupportState.Pylon) {
+			return;
+		}
+
+		const email = user.email || '';
+		const secret = window.signozBootData?.settings?.pylon?.identitySecret || '';
+		let emailHash = '';
+
+		if (email && secret) {
+			emailHash = HmacSHA256(email, Hex.parse(secret)).toString(Hex);
+		}
+
+		window.pylon = {
+			chat_settings: {
+				app_id: window.signozBootData?.settings?.pylon?.appId,
+				email: user.email,
+				name: user.displayName || user.email,
+				email_hash: emailHash,
+			},
+		};
+	}, [chatSupport, user]);
+
+	useEffect(() => {
+		if (!isFetchingUser && isCloudUser && user && user.email) {
+			enableAnalytics(user);
+		}
+	}, [user, isFetchingUser, isCloudUser, enableAnalytics]);
+
+	useEffect(() => {
+		if (isCloudUser || isEnterpriseSelfHostedUser) {
+			if (
+				window.signozBootData?.settings?.posthog?.enabled &&
+				window.signozBootData?.settings?.posthog?.key
+			) {
+				posthog.init(window.signozBootData.settings.posthog.key, {
+					api_host: window.signozBootData.settings.posthog.apiHost,
+					ui_host: window.signozBootData.settings.posthog.uiHost,
+					person_profiles: 'identified_only', // or 'always' to create profiles for anonymous users as well
+				});
+			}
+
+			if (
+				!isSentryInitialized &&
+				window.signozBootData?.settings?.sentry?.enabled
+			) {
+				Sentry.init({
+					dsn: window.signozBootData.settings.sentry.dsn,
+					tunnel: window.signozBootData.settings.sentry.tunnel,
+					environment: process.env.ENVIRONMENT,
+					release: process.env.VERSION,
+					ignoreErrors: SENTRY_IGNORE_ERRORS,
+					integrations: [
+						// Kept for the `transaction` tag used in routing, even though
+						// tracing is disabled. Ref: https://github.com/SigNoz/platform-pod/issues/2393#issuecomment-4603658055
+						Sentry.browserTracingIntegration(),
+						Sentry.replayIntegration({
+							maskAllText: false,
+							blockAllMedia: false,
+						}),
+					],
+					tracesSampleRate: 0, // Ref: https://github.com/SigNoz/platform-pod/issues/2393#issuecomment-4603658055
+					replaysSessionSampleRate: 0.1, // This sets the sample rate at 10%. You may want to change it to 100% while in development and then sample at a lower rate in production.
+					replaysOnErrorSampleRate: 1.0, // If you're not already sampling the entire session, change the sample rate to 100% when sampling sessions where errors occur.
+					beforeSend(event, hint) {
+						const error = hint?.originalException as
+							| { name?: string; code?: string | number }
+							| undefined;
+
+						// Ignore benign aborted/cancelled requests (axios + fetch).
+						if (error?.code === 'ERR_CANCELED' || error?.code === 'ECONNABORTED') {
+							return null;
+						}
+						if (error?.name === 'AbortError') {
+							return null;
+						}
+						// Ignore benign Monaco cancellation errors (name 'Canceled').
+						if (error?.name === 'Canceled') {
+							return null;
+						}
+
+						// Drop the event if its level is 'warning' or 'info'
+						if (event.level === 'warning' || event.level === 'info') {
+							return null;
+						}
+
+						if (isExternalIntegrationError(event)) {
+							return null;
+						}
+
+						// Dev serves source from /src/, so every frame would look foreign there.
+						if (IS_PROD && hasNoAppFrames(event)) {
+							return null;
+						}
+
+						const sessionReplayUrl = posthog.get_session_replay_url?.({
+							withTimestamp: true,
+						});
+						if (sessionReplayUrl) {
+							// eslint-disable-next-line no-param-reassign
+							event.contexts = {
+								...event.contexts,
+								posthog: { session_replay_url: sessionReplayUrl },
+							};
+						}
+						return event;
+					},
+				});
+
+				setIsSentryInitialized(true);
+			}
+		} else {
+			posthog.reset();
+			Sentry.close();
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [isCloudUser, isEnterpriseSelfHostedUser]);
+
+	if (isPreflightLoading) {
+		return <Spinner tip="Loading..." />;
+	}
+
+	// if the user is in logged in state
+	if (isLoggedInState) {
+		// if the setup calls are loading then return a spinner
+		if (isFetchingActiveLicense || isFetchingUser || isFetchingFeatureFlags) {
+			return <AppLoading />;
+		}
+
+		// if the required calls fails then return a something went wrong error
+		// this needs to be on top of data missing error because if there is an error, data will never be loaded and it will
+		// move to indefinitive loading
+		if (userFetchError && pathname !== ROUTES.SOMETHING_WENT_WRONG) {
+			history.replace(ROUTES.SOMETHING_WENT_WRONG);
+		}
+
+		// if all of the data is not set then return a spinner, this is required because there is some gap between loading states and data setting
+		if (
+			(!activeLicense || !user.email || !featureFlags) &&
+			!userFetchError &&
+			!activeLicenseFetchError
+		) {
+			return <Spinner tip="Loading..." />;
+		}
+	}
+
+	return (
+		<Sentry.ErrorBoundary fallback={<ErrorBoundaryFallback />}>
+			<AppShell
+				router={appRouter}
+				overlays={
+					isLoggedInState && (
+						<>
+							<CmdKPalette userRole={user.role} />
+							<ShiftHoldOverlayController userRole={user.role} />
+						</>
+					)
+				}
+			>
+				<PrivateRoute>
+					<AppPageProviders layout={appLayout}>
+						<Suspense fallback={<Spinner size="large" tip="Loading..." />}>
+							<Switch>
+								{routes.map(({ path, component, exact }) => (
+									<Route
+										key={`${path}`}
+										exact={exact}
+										path={path}
+										component={component}
+									/>
+								))}
+								<Route exact path="/" component={Home} />
+								<Route path="*" component={NotFound} />
+							</Switch>
+						</Suspense>
+					</AppPageProviders>
+				</PrivateRoute>
+			</AppShell>
+		</Sentry.ErrorBoundary>
+	);
+}
+
+export default App;

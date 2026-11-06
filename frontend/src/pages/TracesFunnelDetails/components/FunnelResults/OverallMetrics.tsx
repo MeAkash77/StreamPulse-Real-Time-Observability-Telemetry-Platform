@@ -1,0 +1,26 @@
+import { useAppParams } from 'lib/router/useAppParams';
+import { useFunnelMetrics } from 'hooks/TracesFunnels/useFunnelMetrics';
+
+import FunnelMetricsTable from './FunnelMetricsTable';
+
+function OverallMetrics(): JSX.Element {
+	const { funnelId } = useAppParams<'funnelId'>();
+	const { isLoading, metricsData, conversionRate, isError } = useFunnelMetrics({
+		funnelId: funnelId || '',
+	});
+
+	return (
+		<FunnelMetricsTable
+			title="Overall Funnel Metrics"
+			subtitle={{
+				label: 'Conversion rate',
+				value: `${conversionRate.toFixed(2)}%`,
+			}}
+			isLoading={isLoading}
+			isError={isError}
+			data={metricsData}
+		/>
+	);
+}
+
+export default OverallMetrics;

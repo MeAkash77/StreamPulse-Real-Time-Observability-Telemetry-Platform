@@ -1,0 +1,376 @@
+import { type ReactElement, useCallback, useMemo } from 'react';
+import { JSONTree, KeyPath } from 'react-json-tree';
+import { useCopyToClipboard } from 'react-use';
+import { Copy, Ellipsis, Pin, PinOff } from '@signozhq/icons';
+import { Dropdown, type DropdownActionItemType } from '@signozhq/ui/dropdown';
+import { Input } from '@signozhq/ui/input';
+import { toast } from '@signozhq/ui/sonner';
+import { useIsDarkMode } from 'hooks/useDarkMode';
+
+import { darkTheme, lightTheme, themeExtension } from './constants';
+import usePinnedFields from './hooks/usePinnedFields';
+import useSearchFilter, { filterTree } from './hooks/useSearchFilter';
+import {
+	getLeafKeyFromPath,
+	keyPathToDisplayString,
+	keyPathToForward,
+	serializeKeyPath,
+} from './utils';
+
+import './PrettyView.styles.scss';
+
+export interface FieldContext {
+	fieldKey: string;
+	fieldKeyPath: (string | number)[];
+	fieldValue: unknown;
+	isNested: boolean;
+}
+
+export interface PrettyViewAction {
+	key: string;
+	label: React.ReactNode;
+	icon?: ReactElement;
+	onClick: (context: FieldContext) => void;
+	/**
+	 * If provided, action is hidden when this returns true. Receives the leaf
+	 * key plus the full path so callers can hide based on ancestor segments
+	 * (e.g. anything under `events.*`).
+	 */
+	shouldHide?: (key: string, fieldKeyPath: (string | number)[]) => boolean;
+}
+
+export interface VisibleActionsConfig {
+	leaf: readonly string[];
+	nested: readonly string[];
+}
+
+export interface PrettyViewProps {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	data: Record<string, any>;
+	actions?: PrettyViewAction[];
+	visibleActions?: VisibleActionsConfig;
+	searchable?: boolean;
+	showPinned?: boolean;
+	drawerKey?: string;
+	/**
+	 * Controlled list of pinned key paths (each entry is `JSON.stringify(path)`).
+	 * When provided, PrettyView delegates persistence to the caller via
+	 * `onPinnedFieldsChange` and skips its own localStorage I/O.
+	 */
+	pinnedFieldsValue?: string[];
+	onPinnedFieldsChange?: (next: string[]) => void;
+	/**
+	 * Optional per-leaf value renderer. Return a node to override the default
+	 * `String(value)` rendering for that leaf, or `undefined` to fall back. Used
+	 * e.g. to sanitize/format log body values (ANSI → color, unescape).
+	 */
+	renderLeafValue?: (
+		value: unknown,
+		keyPath: readonly (string | number)[],
+	) => React.ReactNode | undefined;
+}
+
+function PrettyView({
+	data,
+	actions,
+	visibleActions,
+	searchable = true,
+	showPinned = false,
+	drawerKey = 'default',
+	pinnedFieldsValue,
+	onPinnedFieldsChange,
+	renderLeafValue,
+}: PrettyViewProps): JSX.Element {
+	const isDarkMode = useIsDarkMode();
+	const [, setCopy] = useCopyToClipboard();
+	const { searchQuery, setSearchQuery, filteredData } = useSearchFilter(data);
+	const {
+		isPinned,
+		togglePin,
+		pinnedEntries,
+		pinnedData,
+		displayKeyToForwardPath,
+	} = usePinnedFields(data, drawerKey, {
+		value: pinnedFieldsValue,
+		onChange: onPinnedFieldsChange,
+	});
+
+	const filteredPinnedData = useMemo(() => {
+		const trimmed = searchQuery.trim();
+		if (!trimmed) {
+			return pinnedData;
+		}
+		return filterTree(pinnedData, trimmed) || {};
+	}, [pinnedData, searchQuery]);
+
+	const theme = useMemo(
+		() => ({
+			extend: isDarkMode ? darkTheme : lightTheme,
+			...themeExtension,
+		}),
+		[isDarkMode],
+	);
+
+	const shouldExpandNodeInitially = useCallback(
+		(
+			_keyPath: readonly (string | number)[],
+			_data: unknown,
+			level: number,
+		): boolean => level < 5,
+		[],
+	);
+
+	const isActionVisible = useCallback(
+		(actionKey: string, isNested: boolean): boolean => {
+			if (!visibleActions) {
+				return true;
+			}
+			const list = isNested ? visibleActions.nested : visibleActions.leaf;
+			return list.includes(actionKey);
+		},
+		[visibleActions],
+	);
+
+	const buildMenuItems = useCallback(
+		(context: FieldContext): DropdownActionItemType[] => {
+			const items: DropdownActionItemType[] = [];
+
+			// Copy Value action
+			if (isActionVisible('copy', context.isNested)) {
+				items.push({
+					type: 'item',
+					value: 'copy-value',
+					label: 'Copy Value',
+					prefix: <Copy size={12} />,
+					onClick: (): void => {
+						const text =
+							typeof context.fieldValue === 'object'
+								? JSON.stringify(context.fieldValue, null, 2)
+								: String(context.fieldValue);
+						setCopy(text);
+						toast.success('Copied to clipboard', {
+							position: 'top-right',
+						});
+					},
+				});
+			}
+
+			// Pin action
+			if (isActionVisible('pin', context.isNested) && !context.isNested) {
+				const resolvedPath =
+					displayKeyToForwardPath[context.fieldKey] || context.fieldKeyPath;
+				const serialized = serializeKeyPath(resolvedPath);
+				const pinned = isPinned(serialized);
+
+				items.push({
+					type: 'item',
+					value: 'pin',
+					label: pinned ? 'Unpin field' : 'Pin field',
+					prefix: pinned ? <PinOff size={12} /> : <Pin size={12} />,
+					onClick: (): void => {
+						togglePin(resolvedPath);
+					},
+				});
+			}
+
+			// Custom actions (filter, group, etc.)
+			if (actions && actions.length > 0) {
+				const leafKey = getLeafKeyFromPath(
+					context.fieldKeyPath,
+					context.fieldKey,
+					displayKeyToForwardPath,
+				);
+
+				const visibleCustomActions = actions.filter(
+					(action) =>
+						isActionVisible(action.key, context.isNested) &&
+						!(action.shouldHide && action.shouldHide(leafKey, context.fieldKeyPath)),
+				);
+				visibleCustomActions.forEach((action) => {
+					items.push({
+						type: 'item',
+						value: action.key,
+						label: action.label,
+						prefix: action.icon,
+						onClick: (): void => {
+							action.onClick(context);
+						},
+					});
+				});
+			}
+
+			return items;
+		},
+		[actions, isActionVisible, isPinned, togglePin, displayKeyToForwardPath],
+	);
+
+	const renderWithActions = useCallback(
+		({
+			content,
+			fieldKey,
+			fieldKeyPath,
+			value,
+			isNested,
+		}: {
+			content: React.ReactNode;
+			fieldKey: string;
+			fieldKeyPath: (string | number)[];
+			value: unknown;
+			isNested: boolean;
+		}): React.ReactNode => {
+			const context: FieldContext = {
+				fieldKey,
+				fieldKeyPath,
+				fieldValue: value,
+				isNested,
+			};
+			const menuItems = buildMenuItems(context);
+			return (
+				<span className="pretty-view__value-row">
+					<span>{content}</span>
+					{/* The menu is portalled, but its clicks still bubble through the React
+					tree to react-json-tree's expand toggle around getItemString. */}
+					{menuItems.length > 0 && (
+						<span
+							role="presentation"
+							className="pretty-view__actions-boundary"
+							onClick={(e): void => {
+								e.stopPropagation();
+							}}
+						>
+							<Dropdown
+								items={menuItems}
+								nativeButton={false}
+								align="start"
+								side="bottom"
+							>
+								<span
+									className="pretty-view__actions"
+									role="button"
+									tabIndex={0}
+									aria-label={`Actions for ${fieldKey}`}
+									data-testid={`pretty-view-actions-${fieldKey}`}
+								>
+									<Ellipsis size={12} />
+								</span>
+							</Dropdown>
+						</span>
+					)}
+				</span>
+			);
+		},
+		[buildMenuItems],
+	);
+
+	// eslint-disable-next-line max-params
+	const getItemString = useCallback(
+		(
+			_nodeType: string,
+			nodeData: unknown,
+			itemType: React.ReactNode,
+			itemString: string,
+			keyPath: KeyPath,
+		): React.ReactNode => {
+			const forwardPath = keyPathToForward(keyPath);
+			return renderWithActions({
+				content: (
+					<>
+						{itemType} {itemString}
+					</>
+				),
+				fieldKey: keyPathToDisplayString(keyPath),
+				fieldKeyPath: forwardPath,
+				value: nodeData,
+				isNested: true,
+			});
+		},
+		[renderWithActions],
+	);
+
+	const valueRenderer = useCallback(
+		(
+			valueAsString: unknown,
+			value: unknown,
+			...keyPath: KeyPath
+		): React.ReactNode => {
+			const forwardPath = keyPathToForward(keyPath);
+			const custom = renderLeafValue?.(value, keyPath);
+			return renderWithActions({
+				content: custom ?? String(valueAsString),
+				fieldKey: keyPathToDisplayString(keyPath),
+				fieldKeyPath: forwardPath,
+				value,
+				isNested: typeof value === 'object' && value !== null,
+			});
+		},
+		[renderWithActions, renderLeafValue],
+	);
+
+	const pinnedLabelRenderer = useCallback(
+		(keyPath: KeyPath): React.ReactNode => {
+			const displayKey = String(keyPath[0]);
+			const entry = pinnedEntries.find((e) => e.displayKey === displayKey);
+			return (
+				<span className="pretty-view__pinned-label">
+					<Pin
+						size={12}
+						className="pretty-view__pinned-icon"
+						onClick={(): void => {
+							if (entry) {
+								togglePin(entry.forwardPath);
+							}
+						}}
+					/>
+					<span>{displayKey}</span>
+				</span>
+			);
+		},
+		[togglePin, pinnedEntries],
+	);
+
+	return (
+		<div className="pretty-view">
+			{searchable && (
+				<div className="pretty-view__search-wrapper">
+					<Input
+						className="pretty-view__search-input"
+						type="text"
+						placeholder="Search for a field..."
+						value={searchQuery}
+						onChange={(e): void => setSearchQuery(e.target.value)}
+					/>
+				</div>
+			)}
+
+			{showPinned && Object.keys(filteredPinnedData).length > 0 && (
+				<div className="pretty-view__pinned">
+					<div className="pretty-view__pinned-header">PINNED ITEMS</div>
+					<JSONTree
+						key={`pinned-${searchQuery}`}
+						data={filteredPinnedData}
+						theme={theme}
+						invertTheme={false}
+						hideRoot
+						shouldExpandNodeInitially={shouldExpandNodeInitially}
+						valueRenderer={valueRenderer}
+						getItemString={getItemString}
+						labelRenderer={pinnedLabelRenderer}
+					/>
+				</div>
+			)}
+
+			<JSONTree
+				key={searchQuery}
+				data={filteredData}
+				theme={theme}
+				invertTheme={false}
+				hideRoot
+				shouldExpandNodeInitially={shouldExpandNodeInitially}
+				valueRenderer={valueRenderer}
+				getItemString={getItemString}
+			/>
+		</div>
+	);
+}
+
+export default PrettyView;

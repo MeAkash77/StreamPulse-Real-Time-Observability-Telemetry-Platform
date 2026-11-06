@@ -1,0 +1,41 @@
+import { Table } from 'antd';
+import { Typography } from '@signozhq/ui/typography';
+
+import { ALL_SHORTCUTS, generateTableData, shortcutColumns } from './utils';
+
+import './Shortcuts.styles.scss';
+
+function Shortcuts(): JSX.Element {
+	function getShortcutTable(shortcutSection: string): JSX.Element {
+		const tableData = generateTableData(shortcutSection);
+
+		return (
+			<section
+				key={shortcutSection}
+				className="shortcut-section"
+				data-testid={`shortcut-section-${shortcutSection}`}
+			>
+				<Typography.Text className="shortcut-section-heading">
+					{shortcutSection}
+				</Typography.Text>
+				<Table
+					columns={shortcutColumns}
+					dataSource={tableData}
+					pagination={false}
+					className="shortcut-section-table"
+					bordered
+				/>
+			</section>
+		);
+	}
+
+	return (
+		<div className="keyboard-shortcuts" data-testid="keyboard-shortcuts-page">
+			{Object.keys(ALL_SHORTCUTS).map((shortcutSection) =>
+				getShortcutTable(shortcutSection),
+			)}
+		</div>
+	);
+}
+
+export default Shortcuts;

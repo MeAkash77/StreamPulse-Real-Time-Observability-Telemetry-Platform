@@ -1,0 +1,155 @@
+import { useState } from 'react';
+import { Button } from '@signozhq/ui/button';
+import { Modal } from 'antd/lib';
+import logEvent from 'api/common/logEvent';
+import { useDisconnectAccount } from 'api/generated/services/cloudintegration';
+import { CloudintegrationtypesGCPConnectionMethodDTO } from 'api/generated/services/sigNoz.schemas';
+import { SOMETHING_WENT_WRONG } from 'constants/api';
+import {
+	INTEGRATION_TELEMETRY_EVENTS,
+	INTEGRATION_TYPES,
+} from 'container/Integrations/constants';
+import { useNotifications } from 'hooks/useNotifications';
+import { Unlink } from '@signozhq/icons';
+
+import './RemoveIntegrationAccount.scss';
+
+function RemoveIntegrationAccount({
+	cloudProvider,
+	accountId,
+	onRemoveIntegrationAccountSuccess,
+	gcpConnectionMethod,
+}: {
+	cloudProvider: string;
+	accountId: string;
+	onRemoveIntegrationAccountSuccess: () => void;
+	gcpConnectionMethod?: CloudintegrationtypesGCPConnectionMethodDTO;
+}): JSX.Element {
+	const { notifications } = useNotifications();
+	const [isModalOpen, setIsModalOpen] = useState(false);
+
+	const handleDisconnect = (): void => {
+		setIsModalOpen(true);
+	};
+
+	const { mutate: disconnectAccount, isLoading: isRemoveIntegrationLoading } =
+		useDisconnectAccount({
+			mutation: {
+				onSuccess: () => {
+					onRemoveIntegrationAccountSuccess?.();
+					setIsModalOpen(false);
+				},
+				onError: () => {
+					notifications.error({
+						message: SOMETHING_WENT_WRONG,
+					});
+				},
+			},
+		});
+	const handleOk = (): void => {
+		void logEvent(INTEGRATION_TELEMETRY_EVENTS.INTEGRATION_ACCOUNT_REMOVED, {
+			accountId,
+			integration: cloudProvider,
+		});
+		disconnectAccount({
+			pathParams: {
+				cloudProvider,
+				id: accountId,
+			},
+		});
+	};
+
+	const handleCancel = (): void => {
+		setIsModalOpen(false);
+	};
+
+	let modalDescription: JSX.Element;
+	if (cloudProvider === INTEGRATION_TYPES.AWS) {
+		modalDescription = (
+			<>
+				Removing this account will remove all components created for sending
+				telemetry to SigNoz in your AWS account within the next ~15 minutes
+				(cloudformation stacks named signoz-integration-telemetry-collection in
+				enabled regions). <br />
+				<br />
+				After that, you can delete the cloudformation stack that was created
+				manually when connecting this account.
+			</>
+		);
+	} else if (
+		cloudProvider === INTEGRATION_TYPES.GCP &&
+		gcpConnectionMethod === CloudintegrationtypesGCPConnectionMethodDTO.agent
+	) {
+		modalDescription = (
+			<>
+				Removing this account will stop SigNoz from monitoring it, and the agent
+				will disable the telemetry resources it created in your GCP project. <br />
+				<br />
+				After that, you can delete the signoz-integration-bootstrap Infrastructure
+				Manager deployment, the signoz-integration-bootstrap service account and the
+				signoz-integration secrets that were created while connecting this account.
+			</>
+		);
+	} else if (cloudProvider === INTEGRATION_TYPES.GCP) {
+		modalDescription = (
+			<>
+				Removing this account will stop SigNoz from monitoring it. <br />
+				<br />
+				Since you manage the GCP resources yourself, remember to manually tear down
+				the OTel collector and Pub/Sub resources you created for this integration if
+				you no longer need them.
+			</>
+		);
+	} else {
+		modalDescription = (
+			<>
+				Removing this account will remove all components created for sending
+				telemetry to SigNoz in your Azure subscription within the next ~15 minutes
+				(deployment stack named signoz-integration-telemetry will be deleted
+				automatically). <br />
+				<br />
+				After that, you have to manually delete &apos;signoz-integration&apos;
+				deployment stack that was created while connecting this account (Takes ~20
+				minutes to delete).
+			</>
+		);
+	}
+
+	return (
+		<div className="remove-integration-account-container">
+			<Button
+				size="md"
+				variant="solid"
+				color="danger"
+				prefix={<Unlink size={14} />}
+				onClick={handleDisconnect}
+				loading={isRemoveIntegrationLoading}
+				testId="cloud-disconnect-account-btn"
+			>
+				Disconnect
+			</Button>
+
+			<Modal
+				className="remove-integration-account-modal"
+				open={isModalOpen}
+				title="Remove integration"
+				onOk={handleOk}
+				onCancel={handleCancel}
+				okText="Remove Account"
+				okButtonProps={{
+					danger: true,
+					loading: isRemoveIntegrationLoading,
+					'data-testid': 'cloud-remove-account-confirm',
+				}}
+			>
+				{modalDescription}
+			</Modal>
+		</div>
+	);
+}
+
+RemoveIntegrationAccount.defaultProps = {
+	gcpConnectionMethod: undefined,
+};
+
+export default RemoveIntegrationAccount;

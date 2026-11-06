@@ -1,0 +1,56 @@
+.section {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	flex-shrink: 0;
+	width: 100%;
+	padding: 8px;
+	margin-top: 16px;
+	border: 1px solid var(--l2-border);
+	border-radius: var(--radius-2);
+
+	// Background, padding-x, and rounding are inherited from the parent
+	// bubble — the section sits inside the assistant bubble as its last
+	// block, so it matches the bubble's width by definition.
+}
+
+.heading {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--l3-foreground);
+}
+
+.headingIcon {
+	color: var(--primary);
+	flex-shrink: 0;
+}
+
+.list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.chipLabel {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 220px;
+}
+
+.chipState {
+	font-size: 10px;
+	font-weight: 500;
+	color: var(--l3-foreground);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	padding: 1px 5px;
+	border: 1px solid var(--l2-border);
+	border-radius: 999px;
+	margin-left: 2px;
+}

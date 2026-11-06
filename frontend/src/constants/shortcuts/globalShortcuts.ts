@@ -1,0 +1,76 @@
+export const GlobalShortcuts = {
+	NavigateToServices: 'shift+s',
+	NavigateToDashboards: 'shift+d',
+	NavigateToAlerts: 'shift+a',
+	NavigateToNotificationChannels: 'shift+g+n',
+	NavigateToExceptions: 'shift+e',
+	NavigateToMessagingQueues: 'shift+q',
+	ToggleSidebar: 'shift+b',
+	NavigateToHome: 'shift+h',
+
+	// logs
+	NavigateToLogs: 'shift+l',
+	NavigateToLogsPipelines: 'shift+l+p',
+
+	// traces
+	NavigateToTraces: 'shift+t',
+	NavigateToTracesFunnel: 'shift+t+f',
+
+	// metrics
+	NavigateToMetricsSummary: 'shift+m',
+	NavigateToMetricsExplorer: 'shift+m+e',
+
+	// settings
+	NavigateToSettings: 'shift+g',
+	NavigateToSettingsIngestion: 'shift+g+i',
+	NavigateToSettingsBilling: 'shift+g+b',
+	NavigateToSettingsServiceAccounts: 'shift+g+k',
+	NavigateToSettingsRoles: 'shift+g+r',
+	NavigateToSettingsMembers: 'shift+g+m',
+};
+
+export const GlobalShortcutsName = {
+	NavigateToServices: 'shift+s',
+	NavigateToTraces: 'shift+t',
+	NavigateToDashboards: 'shift+d',
+	NavigateToAlerts: 'shift+a',
+	NavigateToNotificationChannels: 'shift+g+n',
+	NavigateToExceptions: 'shift+e',
+	NavigateToMessagingQueues: 'shift+q',
+	ToggleSidebar: 'shift+b',
+	NavigateToHome: 'shift+h',
+	NavigateToTracesFunnel: 'shift+t+f',
+	NavigateToMetricsSummary: 'shift+m',
+	NavigateToMetricsExplorer: 'shift+m+e',
+	NavigateToSettings: 'shift+g',
+	NavigateToSettingsIngestion: 'shift+g+i',
+	NavigateToSettingsBilling: 'shift+g+b',
+	NavigateToSettingsServiceAccounts: 'shift+g+k',
+	NavigateToSettingsRoles: 'shift+g+r',
+	NavigateToSettingsMembers: 'shift+g+m',
+	NavigateToLogs: 'shift+l',
+	NavigateToLogsPipelines: 'shift+l+p',
+};
+
+export const GlobalShortcutsDescription = {
+	NavigateToHome: 'Navigate to Home',
+	NavigateToServices: 'Navigate to Services page',
+	NavigateToTraces: 'Navigate to Traces Explorer',
+	NavigateToLogs: 'Navigate to Logs Explorer',
+	NavigateToDashboards: 'Navigate to Dashboards List',
+	NavigateToAlerts: 'Navigate to Alerts List',
+	NavigateToNotificationChannels: 'Navigate to Notification Channels',
+	NavigateToExceptions: 'Navigate to Exceptions List',
+	NavigateToMessagingQueues: 'Navigate to Messaging Queues',
+	ToggleSidebar: 'Toggle sidebar visibility',
+	NavigateToTracesFunnel: 'Navigate to Traces Funnel',
+	NavigateToMetricsSummary: 'Navigate to Metrics Summary',
+	NavigateToMetricsExplorer: 'Navigate to Metrics Explorer',
+	NavigateToSettings: 'Navigate to Settings',
+	NavigateToSettingsIngestion: 'Navigate to Ingestion Settings',
+	NavigateToSettingsBilling: 'Navigate to Billing Settings',
+	NavigateToLogsPipelines: 'Navigate to Logs Pipelines',
+	NavigateToSettingsServiceAccounts: 'Navigate to Service Accounts Settings',
+	NavigateToSettingsRoles: 'Navigate to Roles Settings',
+	NavigateToSettingsMembers: 'Navigate to Members Settings',
+};

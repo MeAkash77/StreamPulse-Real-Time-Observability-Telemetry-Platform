@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    // `moduleResolution: bundler` requires `module` at es2015+. Playwright
+    // transpiles with its own loader and this config only runs with `--noEmit`.
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    // `DOM` is needed because drivers run browser code inside `page.evaluate`
+    // callbacks (localStorage, window, document).
+    "lib": ["ES2020", "DOM"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "types": ["node", "@playwright/test"],
+    "paths": {
+      "@tests/*": ["./tests/*"],
+      "@specs/*": ["./specs/*"]
+    }
+  },
+  "include": ["tests/**/*.ts", "drivers/**/*.ts", "bootstrap/**/*.ts", "playwright.config.ts"],
+  "exclude": ["node_modules", "dist"]
+}

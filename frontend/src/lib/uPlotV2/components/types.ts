@@ -1,0 +1,209 @@
+import { ReactNode } from 'react';
+import { Timezone } from 'components/CustomTimePicker/timezoneUtils';
+import { PrecisionOption } from 'components/Graph/types';
+import uPlot from 'uplot';
+
+import { UPlotConfigBuilder } from '../config/UPlotConfigBuilder';
+import { LegendItem } from '../config/types';
+import { HeatmapSeries, HeatmapYAxis } from '../plugins/HeatmapPlugin/types';
+import type {
+	ScatterChannels,
+	ScatterPointLabel,
+} from '../plugins/ScatterPlugin/types';
+import { SyncTooltipFilterMode } from '../plugins/TooltipPlugin/types';
+
+/**
+ * Props for the Plot component
+ */
+export interface UPlotChartProps {
+	/**
+	 * uPlot configuration builder
+	 */
+	config: UPlotConfigBuilder;
+
+	/**
+	 * Chart data in uPlot.AlignedData format
+	 */
+	data: uPlot.AlignedData;
+
+	/**
+	 * Chart width in pixels
+	 */
+	width: number;
+
+	/**
+	 * Chart height in pixels
+	 */
+	height: number;
+
+	/**
+	 * Optional callback when plot instance is created or destroyed.
+	 * Called with the uPlot instance on create, and with null when the plot is destroyed.
+	 */
+	plotRef?: (u: uPlot | null) => void;
+
+	/**
+	 * Optional callback when plot is destroyed
+	 */
+	onDestroy?: (u: uPlot) => void;
+
+	/**
+	 * Children elements (typically plugins)
+	 */
+	children?: ReactNode;
+
+	/**
+	 * Test ID for the container div
+	 */
+	'data-testid'?: string;
+}
+
+export interface TooltipRenderArgs {
+	uPlotInstance: uPlot;
+	dataIndexes: Array<number | null>;
+	seriesIndex: number | null;
+	isPinned: boolean;
+	dismiss: () => void;
+	viaSync: boolean;
+	/** In Tooltip sync mode, identifies receiver series that match the source's
+	 * focused series on the shared groupBy keys.
+	 * Filtered mode: limits which series are rendered (null = no filter,
+	 *   [] = no matches/tooltip hidden upstream, [...] = allowed indexes).
+	 * All mode: same indexes are interpreted as a highlight set; non-matching
+	 *   series still render. */
+	syncedSeriesIndexes?: number[] | null;
+	/** Receiver-side filter mode for the synced tooltip. Defaults to Filtered. */
+	syncFilterMode?: SyncTooltipFilterMode;
+	/**
+	 * Pre-stack values, injected by `ChartWrapper`. `Percent` discards the column total,
+	 * so the raw value cannot be recovered from the plot's own cumulative data.
+	 */
+	unstackedData?: uPlot.AlignedData;
+}
+
+export interface IRenderTooltipFooterArgs {
+	pinKey?: string;
+	isPinned: boolean;
+	dismiss: () => void;
+}
+
+export interface BaseTooltipProps {
+	id: string;
+	showTooltipHeader?: boolean;
+	canPinTooltip?: boolean;
+	yAxisUnit?: string;
+	decimalPrecision?: PrecisionOption;
+	content?: TooltipContentItem[];
+	renderTooltipFooter?: (args: IRenderTooltipFooterArgs) => ReactNode;
+	timezone?: Timezone;
+}
+
+export interface TimeSeriesTooltipProps
+	extends BaseTooltipProps, TooltipRenderArgs {}
+
+export interface BarTooltipProps extends BaseTooltipProps, TooltipRenderArgs {
+	isStackedBarChart?: boolean;
+}
+
+export interface HistogramTooltipProps
+	extends BaseTooltipProps, TooltipRenderArgs {}
+
+/** Not part of `TooltipProps`: it renders its own container, since none of its
+ *  states is the flat series list the shared `Tooltip` draws. */
+export interface HeatmapTooltipProps
+	extends BaseTooltipProps, TooltipRenderArgs {
+	yAxis: HeatmapYAxis;
+	/** Column width in seconds. */
+	step: number;
+	/** Needed to break a summed cell down by contribution. */
+	series: HeatmapSeries[];
+	/** Groups the legend has enabled; the cell sums exactly these. */
+	visibleGroups: string[];
+	/** Same colour the legend and the densest cells use. */
+	groupColor: string;
+}
+
+export interface ScatterTooltipProps
+	extends BaseTooltipProps, TooltipRenderArgs {
+	channels: ScatterChannels;
+	/** The group values behind a point, e.g. `service.name` → `cart`. */
+	resolvePointGroupValues?: (
+		seriesIndex: number,
+		dataIndex: number,
+	) => ScatterPointLabel[];
+}
+
+export type TooltipProps =
+	| TimeSeriesTooltipProps
+	| BarTooltipProps
+	| HistogramTooltipProps;
+
+export enum LegendPosition {
+	BOTTOM = 'bottom',
+	RIGHT = 'right',
+}
+export interface LegendConfig {
+	position: LegendPosition;
+}
+export enum LegendAction {
+	TOGGLE = 'toggle',
+	SHOW_ONLY = 'showOnly',
+	SHOW_ALL = 'showAll',
+	HOVER = 'hover',
+}
+
+/** Everything the legend can ask of its container, as one dispatch. */
+export type LegendActionPayload =
+	/** Row click / Space / Enter / marker click: hide or show that one series. */
+	| { type: LegendAction.TOGGLE; seriesIndex: number }
+	/** Show that series alone. */
+	| { type: LegendAction.SHOW_ONLY; seriesIndex: number }
+	/** Leave the narrowed selection and show every series. */
+	| { type: LegendAction.SHOW_ALL }
+	/** Row hover, for the chart-side highlight; null on leave. */
+	| { type: LegendAction.HOVER; seriesIndex: number | null };
+
+export type OnLegendAction = (payload: LegendActionPayload) => void;
+
+/**
+ * Presentational legend props. Source-agnostic: it renders whatever `items`
+ * it's given and delegates interaction to the container handlers, so it serves
+ * both uPlot charts (via UPlotLegend) and non-uPlot charts (Pie).
+ */
+export interface LegendProps {
+	items: LegendItem[];
+	/** Legend placement; always supplied by the container. */
+	position: LegendPosition;
+	averageLegendWidth?: number;
+	/** Set by the chart layout, which reserves the height for it. */
+	showSearch?: boolean;
+	/** Series index highlighted by the chart cursor. */
+	focusedSeriesIndex: number | null;
+	onAction: OnLegendAction;
+	/** Show the per-item copy button. Default true. */
+	showCopy?: boolean;
+	/** Plural noun for the items in the search readouts. Default 'series'. */
+	itemLabel?: string;
+}
+
+/** Props for the uPlot legend controller, which derives items + interaction
+ * from the chart config and renders the presentational Legend. */
+export interface UPlotLegendProps {
+	position?: LegendPosition;
+	config: UPlotConfigBuilder;
+	averageLegendWidth?: number;
+	showSearch?: boolean;
+}
+
+export interface TooltipContentItem {
+	label: string;
+	value: number;
+	tooltipValue: string;
+	color: string;
+	isActive: boolean;
+	/** Synced receiver series whose metric matches the source's focused series
+	 * on the shared groupBy keys, in 'all' filter mode. List rendering uses this
+	 * to apply the active highlight to matching rows while non-matching rows
+	 * stay dimmed. */
+	isHighlighted?: boolean;
+}

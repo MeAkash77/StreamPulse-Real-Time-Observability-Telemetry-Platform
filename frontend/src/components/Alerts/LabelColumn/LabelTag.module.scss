@@ -1,0 +1,22 @@
+.labelValue {
+	text-overflow: ellipsis;
+	overflow: hidden;
+}
+
+.tooltipContent {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.copyButton {
+	all: unset;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	opacity: 0.7;
+
+	&:hover {
+		opacity: 1;
+	}
+}
