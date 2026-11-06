@@ -549,15 +549,3 @@ SigNoz uses columnar database for efficient observability analytics and high-car
 
 **Loki**<br>
 In the linked benchmark, SigNoz indexed all keys in the test setup, while Loki hit max stream errors when more labels were added. Check the [detailed study](https://signoz.io/blog/logs-performance-benchmark/?utm_source=github-readme&utm_medium=logs-benchmark).
-
-## Contributing
-
-We ❤️ contributions big or small. Please read [CONTRIBUTING.md](CONTRIBUTING.md) to get started with making contributions to SigNoz.
-
-Not sure how to get started? **Just ping us on `#contributing` in our [slack community](https://signoz.io/slack).**
-
-As always, thanks to our amazing contributors!
-
-<a href="https://github.com/signoz/signoz/graphs/contributors">
-  <img alt="SigNoz contributors" src="https://contrib.rocks/image?repo=signoz/signoz" />
-</a>
